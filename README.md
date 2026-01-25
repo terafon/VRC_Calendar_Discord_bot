@@ -112,10 +112,3 @@ Cloud Runへのデプロイ方法は[デプロイガイド](docs/DEPLOY.md)を�
 | `GCS_BUCKET_NAME` | バックアップ用バケット名 | Yes |
 | `PORT` | HTTPポート（デフォルト: 8080） | No |
 
-## ライセンス
-
-MIT License
-
-## 貢献
-
-Issue、Pull Requestを歓迎します。
