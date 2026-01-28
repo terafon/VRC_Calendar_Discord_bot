@@ -228,7 +228,9 @@ gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
 
 ---
 
-###### 3. GOOGLE_CALENDAR_ID（GoogleカレンダーID）
+###### 3. GOOGLE_CALENDAR_ID（GoogleカレンダーID）【オプション】
+
+> **サーバーごとに異なるカレンダーを使う場合**: Discord上で`/カレンダー追加`と`/カレンダー使用`コマンドで設定できます。この環境変数はデフォルト値として使われます。
 
 **取得場所**: [Googleカレンダー](https://calendar.google.com/)
 
@@ -262,7 +264,9 @@ gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
 
 ---
 
-###### 5. GCS_BUCKET_NAME（Cloud Storageバケット名）
+###### 5. GCS_BUCKET_NAME（Cloud Storageバケット名）【オプション】
+
+> **OCI VMで運用する場合は不要です。** VMのディスクにDBが永続化されるため。
 
 **取得場所**: [Google Cloud Console > Cloud Storage](https://console.cloud.google.com/storage/browser)
 
@@ -321,9 +325,13 @@ DISCORD_BOT_TOKEN=MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.ABcDeF.abcdefghijklmnopqrstuvwxyz12
 
 # Google Cloud
 GCP_PROJECT_ID=vrc-calendar-bot-12345
-GOOGLE_CALENDAR_ID=abc123xyz@group.calendar.google.com
 GOOGLE_APPLICATION_CREDENTIALS=/home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
-GCS_BUCKET_NAME=vrc-calendar-bot-backup
+
+# Googleカレンダー（オプション: サーバーごとに /カレンダー追加 と /カレンダー使用 で上書き可能）
+GOOGLE_CALENDAR_ID=abc123xyz@group.calendar.google.com
+
+# Cloud Storage（オプション: OCI VMで運用する場合は不要）
+# GCS_BUCKET_NAME=vrc-calendar-bot-backup
 
 # Gemini API
 GEMINI_API_KEY=AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz123456

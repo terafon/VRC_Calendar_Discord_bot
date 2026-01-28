@@ -107,8 +107,8 @@ Cloud Runへのデプロイ方法は[デプロイガイド](docs/DEPLOY.md)を�
 | `DISCORD_BOT_TOKEN` | Discord Botトークン | Yes |
 | `GEMINI_API_KEY` | Gemini APIキー | Yes |
 | `GCP_PROJECT_ID` | GCPプロジェクトID | Yes |
-| `GOOGLE_CALENDAR_ID` | GoogleカレンダーID | Yes |
 | `GOOGLE_APPLICATION_CREDENTIALS` | サービスアカウントJSONパス | Yes |
-| `GCS_BUCKET_NAME` | バックアップ用バケット名 | Yes |
+| `GOOGLE_CALENDAR_ID` | デフォルトのカレンダーID（サーバーごとに上書き可） | No |
+| `GCS_BUCKET_NAME` | バックアップ用バケット名（OCI VMなら不要） | No |
 | `PORT` | HTTPポート（デフォルト: 8080） | No |
 
