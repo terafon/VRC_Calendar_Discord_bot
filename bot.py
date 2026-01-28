@@ -103,20 +103,22 @@ def setup_commands(bot: CalendarBot):
     async def this_week_command(interaction: discord.Interaction):
         """今週の予定表示"""
         await interaction.response.defer()
-        
-        events = bot.db_manager.get_this_week_events()
+
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        events = bot.db_manager.get_this_week_events(guild_id)
         embed = create_weekly_embed(events)
-        
+
         await interaction.followup.send(embed=embed)
 
     @bot.tree.command(name="予定一覧", description="登録されている繰り返し予定の一覧を表示")
     async def list_command(interaction: discord.Interaction):
         """繰り返し予定マスター一覧"""
         await interaction.response.defer()
-        
-        events = bot.db_manager.get_all_active_events()
+
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        events = bot.db_manager.get_all_active_events(guild_id)
         embed = create_event_list_embed(events)
-        
+
         await interaction.followup.send(embed=embed)
 
     @bot.tree.command(name="ヘルプ", description="Botの使い方とコマンド説明を表示します")
@@ -128,7 +130,8 @@ def setup_commands(bot: CalendarBot):
     @bot.tree.command(name="色一覧", description="色プリセットとGoogleカレンダー色パレットを表示します")
     async def color_list_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        presets = bot.db_manager.list_color_presets()
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        presets = bot.db_manager.list_color_presets(guild_id)
         palette = bot.calendar_manager.get_color_palette()
         embed = create_color_list_embed(presets, palette)
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -137,7 +140,8 @@ def setup_commands(bot: CalendarBot):
     @app_commands.describe(名前="色名", カラーID="GoogleカレンダーのcolorId", 説明="色の説明")
     async def color_add_command(interaction: discord.Interaction, 名前: str, カラーID: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
-        bot.db_manager.add_color_preset(名前, カラーID, 説明)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        bot.db_manager.add_color_preset(guild_id, 名前, カラーID, 説明)
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ 色プリセット「{名前}」を設定しました。", ephemeral=True)
 
@@ -145,15 +149,17 @@ def setup_commands(bot: CalendarBot):
     @app_commands.describe(名前="色名")
     async def color_delete_command(interaction: discord.Interaction, 名前: str):
         await interaction.response.defer(ephemeral=True)
-        bot.db_manager.delete_color_preset(名前)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        bot.db_manager.delete_color_preset(guild_id, 名前)
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ 色プリセット「{名前}」を削除しました。", ephemeral=True)
 
     @bot.tree.command(name="タググループ一覧", description="タググループを表示します")
     async def tag_group_list_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        groups = bot.db_manager.list_tag_groups()
-        tags = bot.db_manager.list_tags()
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        groups = bot.db_manager.list_tag_groups(guild_id)
+        tags = bot.db_manager.list_tags(guild_id)
         embed = create_tag_group_list_embed(groups, tags)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -161,7 +167,8 @@ def setup_commands(bot: CalendarBot):
     @app_commands.describe(名前="グループ名", 説明="グループの説明")
     async def tag_group_add_command(interaction: discord.Interaction, 名前: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
-        bot.db_manager.add_tag_group(名前, 説明)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        bot.db_manager.add_tag_group(guild_id, 名前, 説明)
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タググループ「{名前}」を追加しました。", ephemeral=True)
 
@@ -169,7 +176,8 @@ def setup_commands(bot: CalendarBot):
     @app_commands.describe(ID="グループID")
     async def tag_group_delete_command(interaction: discord.Interaction, ID: int):
         await interaction.response.defer(ephemeral=True)
-        bot.db_manager.delete_tag_group(ID)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        bot.db_manager.delete_tag_group(guild_id, ID)
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タググループID {ID} を削除しました。", ephemeral=True)
 
@@ -177,7 +185,8 @@ def setup_commands(bot: CalendarBot):
     @app_commands.describe(グループID="グループID", 名前="タグ名", 説明="タグの説明")
     async def tag_add_command(interaction: discord.Interaction, グループID: int, 名前: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
-        bot.db_manager.add_tag(グループID, 名前, 説明)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        bot.db_manager.add_tag(guild_id, グループID, 名前, 説明)
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タグ「{名前}」を追加しました。", ephemeral=True)
 
@@ -185,7 +194,8 @@ def setup_commands(bot: CalendarBot):
     @app_commands.describe(グループID="グループID", 名前="タグ名")
     async def tag_delete_command(interaction: discord.Interaction, グループID: int, 名前: str):
         await interaction.response.defer(ephemeral=True)
-        bot.db_manager.delete_tag(グループID, 名前)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        bot.db_manager.delete_tag(guild_id, グループID, 名前)
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タグ「{名前}」を削除しました。", ephemeral=True)
 
@@ -198,7 +208,8 @@ def setup_commands(bot: CalendarBot):
     @bot.tree.command(name="カレンダー一覧", description="登録済みカレンダーアカウントを表示します")
     async def calendar_list_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        accounts = bot.db_manager.list_calendar_accounts()
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        accounts = bot.db_manager.list_calendar_accounts(guild_id)
         embed = create_calendar_list_embed(accounts)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -206,8 +217,9 @@ def setup_commands(bot: CalendarBot):
     @app_commands.describe(名前="アカウント名", カレンダーID="GoogleカレンダーID", 認証ファイル="認証JSONのパス（省略可）")
     async def calendar_add_command(interaction: discord.Interaction, 名前: str, カレンダーID: str, 認証ファイル: str = ""):
         await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
         credentials_path = 認証ファイル if 認証ファイル else None
-        bot.db_manager.add_calendar_account(名前, カレンダーID, credentials_path)
+        bot.db_manager.add_calendar_account(guild_id, 名前, カレンダーID, credentials_path)
         await interaction.followup.send(f"✅ カレンダー「{名前}」を設定しました。", ephemeral=True)
 
     @bot.tree.command(name="カレンダー使用", description="このサーバーで使用するカレンダーを設定します")
@@ -219,16 +231,18 @@ def setup_commands(bot: CalendarBot):
 
 async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
     """予定追加処理"""
+    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
     # タグと色のバリデーション
     tags = parsed.get('tags', []) or []
-    missing_tags = bot.db_manager.find_missing_tags(tags)
+    missing_tags = bot.db_manager.find_missing_tags(guild_id, tags)
     if missing_tags:
         return f"❌ 未登録のタグがあります: {', '.join(missing_tags)}"
 
     color_name = parsed.get('color_name')
     color_id = None
     if color_name:
-        preset = bot.db_manager.get_color_preset(color_name)
+        preset = bot.db_manager.get_color_preset(guild_id, color_name)
         if not preset:
             return f"❌ 色名「{color_name}」が登録されていません。"
         color_id = preset['color_id']
@@ -243,6 +257,7 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
 
     # データベースに保存
     event_id = bot.db_manager.add_event(
+        guild_id=guild_id,
         event_name=parsed['event_name'],
         tags=tags,
         recurrence=parsed['recurrence'],
@@ -307,17 +322,18 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
 
 async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
     """予定編集処理"""
-    events = bot.db_manager.search_events_by_name(parsed.get('event_name'))
-    
+    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+    events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
+
     if not events:
         return f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。"
-    
+
     if len(events) > 1:
         # TODO: 複数ある場合は選択UIを表示（MVPでは最初の一致を編集）
         pass
-    
+
     event = events[0]
-    
+
     # 更新内容を適用
     updates = {}
     if 'time' in parsed: updates['time'] = parsed['time']
@@ -325,14 +341,14 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
     if 'description' in parsed: updates['description'] = parsed['description']
     if 'tags' in parsed:
         tags = parsed.get('tags', []) or []
-        missing_tags = bot.db_manager.find_missing_tags(tags)
+        missing_tags = bot.db_manager.find_missing_tags(guild_id, tags)
         if missing_tags:
             return f"❌ 未登録のタグがあります: {', '.join(missing_tags)}"
         updates['tags'] = tags
     if 'color_name' in parsed:
         color_name = parsed.get('color_name')
         if color_name:
-            preset = bot.db_manager.get_color_preset(color_name)
+            preset = bot.db_manager.get_color_preset(guild_id, color_name)
             if not preset:
                 return f"❌ 色名「{color_name}」が登録されていません。"
         updates['color_name'] = color_name
@@ -358,7 +374,7 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
             color_name = updates.get('color_name')
             color_id = None
             if color_name:
-                preset = bot.db_manager.get_color_preset(color_name)
+                preset = bot.db_manager.get_color_preset(guild_id, color_name)
                 color_id = preset['color_id'] if preset else None
             if color_id:
                 google_updates['colorId'] = color_id
@@ -380,11 +396,12 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
 
 async def handle_delete_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
     """予定削除処理"""
-    events = bot.db_manager.search_events_by_name(parsed.get('event_name'))
-    
+    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+    events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
+
     if not events:
         return f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。"
-    
+
     event = events[0]
     
     # Googleカレンダーから削除
@@ -400,16 +417,18 @@ async def handle_delete_event(bot: CalendarBot, interaction: discord.Interaction
 
 async def handle_search_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> Optional[str]:
     """予定検索処理"""
+    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
     query = parsed.get('search_query', {})
-    
+
     # 日付範囲の計算
     date_range = query.get('date_range', 'this_week')
     start_date, end_date = get_date_range(date_range)
-    
+
     # データベースから検索
     events = bot.db_manager.search_events(
         start_date=start_date,
         end_date=end_date,
+        guild_id=guild_id,
         tags=query.get('tags'),
         event_name=query.get('event_name')
     )
@@ -483,7 +502,8 @@ async def confirm_and_handle_add_event(bot: CalendarBot, interaction: discord.In
     return await handle_add_event(bot, interaction, parsed)
 
 async def confirm_and_handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> Optional[str]:
-    events = bot.db_manager.search_events_by_name(parsed.get('event_name'))
+    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+    events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
     if not events:
         return f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。"
     event = events[0]
@@ -502,7 +522,8 @@ async def confirm_and_handle_edit_event(bot: CalendarBot, interaction: discord.I
     return await handle_edit_event(bot, interaction, parsed)
 
 async def confirm_and_handle_delete_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> Optional[str]:
-    events = bot.db_manager.search_events_by_name(parsed.get('event_name'))
+    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+    events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
     if not events:
         return f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。"
     event = events[0]
@@ -714,9 +735,10 @@ def create_calendar_list_embed(accounts: List[Dict[str, Any]]) -> discord.Embed:
     return embed
 
 async def update_legend_event(bot: CalendarBot, interaction: discord.Interaction):
-    groups = bot.db_manager.list_tag_groups()
-    tags = bot.db_manager.list_tags()
-    presets = bot.db_manager.list_color_presets()
+    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+    groups = bot.db_manager.list_tag_groups(guild_id)
+    tags = bot.db_manager.list_tags(guild_id)
+    presets = bot.db_manager.list_color_presets(guild_id)
 
     lines = ["【色プリセット】"]
     if presets:
