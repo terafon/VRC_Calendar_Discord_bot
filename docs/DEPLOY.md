@@ -207,23 +207,7 @@ nano .env
 
 ---
 
-###### 2. DISCORD_NOTIFICATION_CHANNEL_ID（通知先チャンネルID）
-
-**取得場所**: Discordアプリ
-
-**手順**:
-1. Discordの設定を開く（歯車アイコン）
-2. 「詳細設定」→「開発者モード」をオンにする
-3. 通知を送りたいチャンネルを右クリック
-4. 「チャンネルIDをコピー」をクリック
-
-```
-例: 1234567890123456789
-```
-
----
-
-###### 3. GCP_PROJECT_ID（GCPプロジェクトID）
+###### 2. GCP_PROJECT_ID（GCPプロジェクトID）
 
 **取得場所**: [Google Cloud Console](https://console.cloud.google.com/)
 
@@ -244,7 +228,7 @@ gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
 
 ---
 
-###### 4. GOOGLE_CALENDAR_ID（GoogleカレンダーID）
+###### 3. GOOGLE_CALENDAR_ID（GoogleカレンダーID）
 
 **取得場所**: [Googleカレンダー](https://calendar.google.com/)
 
@@ -262,7 +246,7 @@ gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
 
 ---
 
-###### 5. GOOGLE_APPLICATION_CREDENTIALS（サービスアカウントJSONのパス）
+###### 4. GOOGLE_APPLICATION_CREDENTIALS（サービスアカウントJSONのパス）
 
 これはファイルのパスを指定します。実際のJSONファイルは別途配置する必要があります（次のセクションで説明）。
 
@@ -278,7 +262,7 @@ gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
 
 ---
 
-###### 6. GCS_BUCKET_NAME（Cloud Storageバケット名）
+###### 5. GCS_BUCKET_NAME（Cloud Storageバケット名）
 
 **取得場所**: [Google Cloud Console > Cloud Storage](https://console.cloud.google.com/storage/browser)
 
@@ -302,7 +286,7 @@ gcloud storage buckets create gs://your-bucket-name \
 
 ---
 
-###### 7. GEMINI_API_KEY（Gemini APIキー）
+###### 6. GEMINI_API_KEY（Gemini APIキー）
 
 **取得場所**: [Google AI Studio](https://aistudio.google.com/)
 
@@ -319,7 +303,7 @@ gcloud storage buckets create gs://your-bucket-name \
 
 ---
 
-###### 8. PORT（サーバーポート）
+###### 7. PORT（サーバーポート）
 
 Flask/HTTPサーバーが使用するポート番号です。通常は変更不要。
 
@@ -334,7 +318,6 @@ Flask/HTTPサーバーが使用するポート番号です。通常は変更不�
 ```bash
 # Discord
 DISCORD_BOT_TOKEN=MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.ABcDeF.abcdefghijklmnopqrstuvwxyz123456
-DISCORD_NOTIFICATION_CHANNEL_ID=1234567890123456789
 
 # Google Cloud
 GCP_PROJECT_ID=vrc-calendar-bot-12345
