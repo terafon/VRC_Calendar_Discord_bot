@@ -99,38 +99,45 @@ def weekly_notification_handler():
     return '', 204
 
 async def send_weekly_notifications():
-    """週次通知を全チャンネルに送信"""
+    """週次通知を全サーバー・チャンネルに送信"""
     # Botが準備できるまで待機
     await bot.wait_until_ready()
-    
-    # 今週の予定を取得
-    events = bot.db_manager.get_this_week_events()
-    
-    # チャンネルごとにグループ化
-    channels = set()
-    for event in events:
-        if event.get('discord_channel_id'):
-            channels.add(event['discord_channel_id'])
-    
-    # 各チャンネルに通知
-    for channel_id in channels:
-        try:
-            channel = await bot.fetch_channel(int(channel_id))
-            if not channel:
-                continue
-            
-            # そのチャンネルの予定のみフィルタ
-            channel_events = [
-                e for e in events
-                if e.get('discord_channel_id') == channel_id
-            ]
-            
-            embed = create_weekly_embed(channel_events)
-            await channel.send(content="🔔 **今週の予定通知**", embed=embed)
-            
-        except Exception as e:
-            print(f'Failed to send notification to channel {channel_id}: {e}')
-    
+
+    # 各サーバー（ギルド）ごとに処理
+    for guild in bot.guilds:
+        guild_id = str(guild.id)
+
+        # このサーバーの今週の予定を取得
+        events = bot.db_manager.get_this_week_events(guild_id)
+
+        if not events:
+            continue
+
+        # チャンネルごとにグループ化
+        channels = set()
+        for event in events:
+            if event.get('discord_channel_id'):
+                channels.add(event['discord_channel_id'])
+
+        # 各チャンネルに通知
+        for channel_id in channels:
+            try:
+                channel = await bot.fetch_channel(int(channel_id))
+                if not channel:
+                    continue
+
+                # そのチャンネルの予定のみフィルタ
+                channel_events = [
+                    e for e in events
+                    if e.get('discord_channel_id') == channel_id
+                ]
+
+                embed = create_weekly_embed(channel_events)
+                await channel.send(content="🔔 **今週の予定通知**", embed=embed)
+
+            except Exception as e:
+                print(f'Failed to send notification to channel {channel_id}: {e}')
+
     # 最終通知時刻を更新
     bot.db_manager.update_setting('last_notification_at', datetime.now().isoformat())
 

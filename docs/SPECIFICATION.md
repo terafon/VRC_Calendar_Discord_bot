@@ -64,11 +64,15 @@ VRC Calendar Discord Botは、Discord上で自然言語を使って予定を管�
 
 ## 4. データベース設計
 
+> **重要**: すべてのデータはDiscordサーバー（guild）ごとに分離されています。
+> あるサーバーのユーザーは他のサーバーのデータを閲覧・操作できません。
+
 ### 4.1 eventsテーブル（予定マスター）
 
 | カラム名 | 型 | 説明 |
 |----------|------|------|
 | id | INTEGER | 主キー（自動採番） |
+| **guild_id** | TEXT | **DiscordサーバーID（必須）** |
 | event_name | TEXT | 予定名 |
 | tags | TEXT (JSON) | タグ配列 |
 | recurrence | TEXT | 繰り返しタイプ |
@@ -110,7 +114,8 @@ VRC Calendar Discord Botは、Discord上で自然言語を使って予定を管�
 
 | カラム名 | 型 | 説明 |
 |----------|------|------|
-| name | TEXT | 色名（主キー） |
+| **guild_id** | TEXT | **DiscordサーバーID（複合主キー）** |
+| name | TEXT | 色名（複合主キー） |
 | color_id | TEXT | Googleカレンダー colorId |
 | description | TEXT | 説明 |
 
@@ -120,15 +125,18 @@ VRC Calendar Discord Botは、Discord上で自然言語を使って予定を管�
 | カラム名 | 型 | 説明 |
 |----------|------|------|
 | id | INTEGER | 主キー |
-| name | TEXT | グループ名 |
+| **guild_id** | TEXT | **DiscordサーバーID（UNIQUE制約）** |
+| name | TEXT | グループ名（guild_idとUNIQUE制約） |
 | description | TEXT | 説明 |
+
+> サーバーごとに最大3グループまで作成可能
 
 #### tags
 | カラム名 | 型 | 説明 |
 |----------|------|------|
 | id | INTEGER | 主キー |
-| group_id | INTEGER | タググループID |
-| name | TEXT | タグ名 |
+| group_id | INTEGER | タググループID（外部キー） |
+| name | TEXT | タグ名（group_idとUNIQUE制約） |
 | description | TEXT | 説明 |
 
 ### 4.6 calendar_accounts / guild_settings テーブル
@@ -137,15 +145,16 @@ VRC Calendar Discord Botは、Discord上で自然言語を使って予定を管�
 | カラム名 | 型 | 説明 |
 |----------|------|------|
 | id | INTEGER | 主キー |
-| name | TEXT | アカウント名 |
+| **guild_id** | TEXT | **DiscordサーバーID（UNIQUE制約）** |
+| name | TEXT | アカウント名（guild_idとUNIQUE制約） |
 | calendar_id | TEXT | GoogleカレンダーID |
-| credentials_path | TEXT | 認証ファイルパス |
+| credentials_path | TEXT | 認証ファイルパス（省略時はデフォルト使用） |
 
 #### guild_settings
 | カラム名 | 型 | 説明 |
 |----------|------|------|
 | guild_id | TEXT | DiscordサーバーID（主キー） |
-| calendar_account_id | INTEGER | 使用するカレンダー |
+| calendar_account_id | INTEGER | 使用するカレンダーアカウントID |
 
 ## 5. API設計
 
