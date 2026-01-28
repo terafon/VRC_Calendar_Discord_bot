@@ -176,35 +176,265 @@ pip install -r requirements.txt
 
 #### A-1.7 環境変数ファイルの作成
 
+.envファイルは、Botが動作するために必要な設定値をまとめたファイルです。以下の手順で各値を取得し、設定してください。
+
 ```bash
 # .envファイルを作成
 cp .env.example .env
 nano .env
 ```
 
-**.envファイルの内容**:
+---
+
+##### 各環境変数の取得方法
+
+###### 1. DISCORD_BOT_TOKEN（Discord Botトークン）
+
+**取得場所**: [Discord Developer Portal](https://discord.com/developers/applications)
+
+**手順**:
+1. Discord Developer Portalにログイン
+2. 左メニューから対象のアプリケーションを選択（なければ「New Application」で作成）
+3. 左メニュー「Bot」をクリック
+4. 「Token」セクションの「Reset Token」をクリック
+5. 表示されたトークンをコピー（**一度しか表示されないので必ずコピー**）
+
+```
+例: MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.ABcDeF.abcdefghijklmnopqrstuvwxyz123456
+```
+
+> **注意**: トークンは絶対に公開しないでください。GitHubにpushするとBotが乗っ取られる可能性があります。
+
+---
+
+###### 2. DISCORD_NOTIFICATION_CHANNEL_ID（通知先チャンネルID）
+
+**取得場所**: Discordアプリ
+
+**手順**:
+1. Discordの設定を開く（歯車アイコン）
+2. 「詳細設定」→「開発者モード」をオンにする
+3. 通知を送りたいチャンネルを右クリック
+4. 「チャンネルIDをコピー」をクリック
+
+```
+例: 1234567890123456789
+```
+
+---
+
+###### 3. GCP_PROJECT_ID（GCPプロジェクトID）
+
+**取得場所**: [Google Cloud Console](https://console.cloud.google.com/)
+
+**手順**:
+1. Google Cloud Consoleにログイン
+2. 画面上部のプロジェクト選択ドロップダウンをクリック
+3. 使用するプロジェクトの「ID」列をコピー（名前ではなくID）
+
+```
+例: vrc-calendar-bot-12345
+```
+
+**プロジェクトがない場合**:
+```bash
+# gcloud CLIで新規作成
+gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
+```
+
+---
+
+###### 4. GOOGLE_CALENDAR_ID（GoogleカレンダーID）
+
+**取得場所**: [Googleカレンダー](https://calendar.google.com/)
+
+**手順**:
+1. Googleカレンダーを開く
+2. 左サイドバーで使用するカレンダーの「⋮」（3点メニュー）をクリック
+3. 「設定と共有」をクリック
+4. 下にスクロールして「カレンダーの統合」セクションを見つける
+5. 「カレンダーID」をコピー
+
+```
+例（メインカレンダー）: primary
+例（追加カレンダー）: abc123xyz@group.calendar.google.com
+```
+
+---
+
+###### 5. GOOGLE_APPLICATION_CREDENTIALS（サービスアカウントJSONのパス）
+
+これはファイルのパスを指定します。実際のJSONファイルは別途配置する必要があります（次のセクションで説明）。
+
+**OCI VMの場合**:
+```
+/home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
+```
+
+**ローカル開発の場合**:
+```
+./credentials.json
+```
+
+---
+
+###### 6. GCS_BUCKET_NAME（Cloud Storageバケット名）
+
+**取得場所**: [Google Cloud Console > Cloud Storage](https://console.cloud.google.com/storage/browser)
+
+**手順（バケットがある場合）**:
+1. Cloud Storageのブラウザを開く
+2. 使用するバケット名をコピー
+
+**手順（バケットを新規作成する場合）**:
+```bash
+# gcloud CLIでバケット作成
+gcloud storage buckets create gs://your-bucket-name \
+  --location=asia-northeast1 \
+  --uniform-bucket-level-access
+```
+
+```
+例: vrc-calendar-bot-backup
+```
+
+> **注意**: バケット名はグローバルで一意である必要があります。既に使われている名前は使用できません。
+
+---
+
+###### 7. GEMINI_API_KEY（Gemini APIキー）
+
+**取得場所**: [Google AI Studio](https://aistudio.google.com/)
+
+**手順**:
+1. Google AI Studioにログイン
+2. 左メニューの「Get API Key」をクリック
+3. 「Create API Key」をクリック
+4. プロジェクトを選択（任意）して「Create」
+5. 表示されたAPIキーをコピー
+
+```
+例: AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz123456
+```
+
+---
+
+###### 8. PORT（サーバーポート）
+
+Flask/HTTPサーバーが使用するポート番号です。通常は変更不要。
+
+```
+デフォルト: 8080
+```
+
+---
+
+##### 設定例（すべて入力後）
 
 ```bash
 # Discord
-DISCORD_BOT_TOKEN=your_discord_bot_token_here
-DISCORD_NOTIFICATION_CHANNEL_ID=your_channel_id_here
+DISCORD_BOT_TOKEN=MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.ABcDeF.abcdefghijklmnopqrstuvwxyz123456
+DISCORD_NOTIFICATION_CHANNEL_ID=1234567890123456789
 
 # Google Cloud
-GCP_PROJECT_ID=your-gcp-project-id
-GOOGLE_CALENDAR_ID=your_calendar_id@group.calendar.google.com
+GCP_PROJECT_ID=vrc-calendar-bot-12345
+GOOGLE_CALENDAR_ID=abc123xyz@group.calendar.google.com
 GOOGLE_APPLICATION_CREDENTIALS=/home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
-GCS_BUCKET_NAME=your-bucket-name
+GCS_BUCKET_NAME=vrc-calendar-bot-backup
 
 # Gemini API
-GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_API_KEY=AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz123456
 
 # Server
 PORT=8080
 ```
 
-> **注意**: 値にクォートは不要です。スペースを含む値のみ`"`で囲んでください。
+> **重要**:
+> - 値にクォート（`"`や`'`）は**不要**です
+> - 値の前後にスペースを入れないでください
+> - `=`の前後にもスペースを入れないでください
 
-#### A-1.8 GCPサービスアカウント鍵の配置
+**保存**: `Ctrl+X` → `Y` → `Enter`
+
+---
+
+#### A-1.8 GCPサービスアカウント鍵の配置（credentials.json）
+
+`.env`で指定したパスに、GCPサービスアカウントのJSONファイルを配置する必要があります。
+
+##### サービスアカウントJSONの取得方法
+
+**方法1: gcloud CLIで取得（推奨）**
+
+ローカルマシンで以下を実行:
+```bash
+# サービスアカウントがなければ作成
+gcloud iam service-accounts create calendar-bot-sa \
+  --display-name="Calendar Bot Service Account"
+
+# JSONキーをダウンロード
+gcloud iam service-accounts keys create credentials.json \
+  --iam-account=calendar-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+```
+
+**方法2: GCPコンソールから取得**
+
+1. [IAMと管理 > サービスアカウント](https://console.cloud.google.com/iam-admin/serviceaccounts)を開く
+2. 対象のサービスアカウントをクリック
+3. 「キー」タブをクリック
+4. 「鍵を追加」→「新しい鍵を作成」
+5. 「JSON」を選択して「作成」
+6. ファイルが自動的にダウンロードされる
+
+##### VMへの転送方法
+
+**方法1: SCPで転送（推奨）**
+
+ローカルマシンから:
+```bash
+scp -i ~/.ssh/your_private_key credentials.json ubuntu@<VM_PUBLIC_IP>:/home/ubuntu/VRC_Calendar_Discord_bot/
+```
+
+**方法2: 手動でコピー&ペースト**
+
+1. ローカルでJSONファイルを開いてすべてコピー
+2. VMで以下を実行:
+```bash
+nano /home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
+```
+3. JSONをペースト
+4. `Ctrl+X` → `Y` → `Enter` で保存
+
+##### サービスアカウントへの権限付与
+
+サービスアカウントには以下の権限が必要です:
+
+```bash
+# Secret Managerへのアクセス権（GCP Secret Managerを使う場合）
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:calendar-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+
+# Cloud Storageへのアクセス権（バックアップ用）
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:calendar-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
+```
+
+##### Googleカレンダーへの共有設定
+
+サービスアカウントがカレンダーにアクセスできるように、共有設定が必要です:
+
+1. [Googleカレンダー](https://calendar.google.com/)を開く
+2. 対象カレンダーの「⋮」→「設定と共有」
+3. 「特定のユーザーとの共有」セクション
+4. 「ユーザーを追加」をクリック
+5. サービスアカウントのメールアドレスを入力:
+   ```
+   calendar-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+   ```
+6. 権限: 「変更および共有の管理権限」を選択
+7. 「送信」をクリック
 
 GCPからダウンロードしたサービスアカウントJSONをVMに転送:
 
