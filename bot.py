@@ -137,11 +137,11 @@ def setup_commands(bot: CalendarBot):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @bot.tree.command(name="色追加", description="色プリセットを追加/更新します")
-    @app_commands.describe(名前="色名", カラーID="GoogleカレンダーのcolorId", 説明="色の説明")
-    async def color_add_command(interaction: discord.Interaction, 名前: str, カラーID: str, 説明: str = ""):
+    @app_commands.describe(名前="色名", color_id="GoogleカレンダーのcolorId", 説明="色の説明")
+    async def color_add_command(interaction: discord.Interaction, 名前: str, color_id: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-        bot.db_manager.add_color_preset(guild_id, 名前, カラーID, 説明)
+        bot.db_manager.add_color_preset(guild_id, 名前, color_id, 説明)
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ 色プリセット「{名前}」を設定しました。", ephemeral=True)
 
@@ -173,29 +173,29 @@ def setup_commands(bot: CalendarBot):
         await interaction.followup.send(f"✅ タググループ「{名前}」を追加しました。", ephemeral=True)
 
     @bot.tree.command(name="タググループ削除", description="タググループを削除します")
-    @app_commands.describe(ID="グループID")
-    async def tag_group_delete_command(interaction: discord.Interaction, ID: int):
+    @app_commands.describe(id="グループID")
+    async def tag_group_delete_command(interaction: discord.Interaction, id: int):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-        bot.db_manager.delete_tag_group(guild_id, ID)
+        bot.db_manager.delete_tag_group(guild_id, id)
         await update_legend_event(bot, interaction)
-        await interaction.followup.send(f"✅ タググループID {ID} を削除しました。", ephemeral=True)
+        await interaction.followup.send(f"✅ タググループID {id} を削除しました。", ephemeral=True)
 
     @bot.tree.command(name="タグ追加", description="タグを追加/更新します")
-    @app_commands.describe(グループID="グループID", 名前="タグ名", 説明="タグの説明")
-    async def tag_add_command(interaction: discord.Interaction, グループID: int, 名前: str, 説明: str = ""):
+    @app_commands.describe(group_id="グループID", 名前="タグ名", 説明="タグの説明")
+    async def tag_add_command(interaction: discord.Interaction, group_id: int, 名前: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-        bot.db_manager.add_tag(guild_id, グループID, 名前, 説明)
+        bot.db_manager.add_tag(guild_id, group_id, 名前, 説明)
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タグ「{名前}」を追加しました。", ephemeral=True)
 
     @bot.tree.command(name="タグ削除", description="タグを削除します")
-    @app_commands.describe(グループID="グループID", 名前="タグ名")
-    async def tag_delete_command(interaction: discord.Interaction, グループID: int, 名前: str):
+    @app_commands.describe(group_id="グループID", 名前="タグ名")
+    async def tag_delete_command(interaction: discord.Interaction, group_id: int, 名前: str):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-        bot.db_manager.delete_tag(guild_id, グループID, 名前)
+        bot.db_manager.delete_tag(guild_id, group_id, 名前)
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タグ「{名前}」を削除しました。", ephemeral=True)
 
@@ -214,20 +214,20 @@ def setup_commands(bot: CalendarBot):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @bot.tree.command(name="カレンダー追加", description="カレンダーアカウントを追加/更新します")
-    @app_commands.describe(名前="アカウント名", カレンダーID="GoogleカレンダーID", 認証ファイル="認証JSONのパス（省略可）")
-    async def calendar_add_command(interaction: discord.Interaction, 名前: str, カレンダーID: str, 認証ファイル: str = ""):
+    @app_commands.describe(名前="アカウント名", calendar_id="GoogleカレンダーID", 認証ファイル="認証JSONのパス（省略可）")
+    async def calendar_add_command(interaction: discord.Interaction, 名前: str, calendar_id: str, 認証ファイル: str = ""):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
         credentials_path = 認証ファイル if 認証ファイル else None
-        bot.db_manager.add_calendar_account(guild_id, 名前, カレンダーID, credentials_path)
+        bot.db_manager.add_calendar_account(guild_id, 名前, calendar_id, credentials_path)
         await interaction.followup.send(f"✅ カレンダー「{名前}」を設定しました。", ephemeral=True)
 
     @bot.tree.command(name="カレンダー使用", description="このサーバーで使用するカレンダーを設定します")
-    @app_commands.describe(ID="カレンダーアカウントID")
-    async def calendar_use_command(interaction: discord.Interaction, ID: int):
+    @app_commands.describe(id="カレンダーアカウントID")
+    async def calendar_use_command(interaction: discord.Interaction, id: int):
         await interaction.response.defer(ephemeral=True)
-        bot.db_manager.set_guild_calendar_account(str(interaction.guild_id), ID)
-        await interaction.followup.send(f"✅ このサーバーのカレンダーをID {ID} に設定しました。", ephemeral=True)
+        bot.db_manager.set_guild_calendar_account(str(interaction.guild_id), id)
+        await interaction.followup.send(f"✅ このサーバーのカレンダーをID {id} に設定しました。", ephemeral=True)
 
 async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
     """予定追加処理"""
