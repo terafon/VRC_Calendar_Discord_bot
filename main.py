@@ -11,8 +11,7 @@ from typing import Optional
 from bot import CalendarBot, setup_commands, create_weekly_embed
 from nlp_processor import NLPProcessor
 from calendar_manager import GoogleCalendarManager
-from database_manager import DatabaseManager
-from storage_backup import StorageBackup
+from firestore_manager import FirestoreManager
 from google.cloud import secretmanager
 
 # 環境変数の読み込み
@@ -36,7 +35,7 @@ def get_secret(secret_id: str, default: Optional[str] = None) -> Optional[str]:
 app = Flask(__name__)
 
 # 各種インスタンスの初期化
-db_manager = DatabaseManager('calendar.db')
+db_manager = FirestoreManager(project_id=os.getenv('GCP_PROJECT_ID'))
 # 各種APIキーをSecret Managerまたは環境変数から取得
 gemini_api_key = get_secret('GEMINI_API_KEY')
 discord_bot_token = get_secret('DISCORD_BOT_TOKEN')
@@ -44,10 +43,6 @@ nlp_processor = NLPProcessor(gemini_api_key)
 calendar_manager = GoogleCalendarManager(
     credentials_path=os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'credentials.json'),
     calendar_id=os.getenv('GOOGLE_CALENDAR_ID', 'primary')
-)
-backup_manager = StorageBackup(
-    bucket_name=os.getenv('GCS_BUCKET_NAME'),
-    db_path='calendar.db'
 )
 
 # Discord Bot
@@ -166,12 +161,6 @@ def run_discord_bot():
         loop.close()
 
 if __name__ == '__main__':
-    # 起動時にGCSからDBを復元
-    backup_manager.restore_from_cloud()
-    
-    # 定期バックアップをバックグラウンドで開始
-    backup_manager.start_background_backup(interval_hours=6)
-    
     # Discord Botをスレッドで開始
     bot_thread = threading.Thread(target=run_discord_bot, daemon=True)
     bot_thread.start()
