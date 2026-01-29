@@ -140,16 +140,17 @@ OCIコンソールで「ネットワーキング」→「仮想クラウド・�
 #### A-1.4 VMへのSSH接続
 
 ```bash
-# SSHで接続
+# [ローカルマシンで実行] SSHで接続
 ssh -i ~/.ssh/your_private_key ubuntu@<VM_PUBLIC_IP>
 
-# 初回接続時にパッケージを更新
+# [OCI VM上で実行] 初回接続時にパッケージを更新
 sudo apt update && sudo apt upgrade -y
 ```
 
 #### A-1.5 必要なパッケージのインストール
 
 ```bash
+# [OCI VM上で実行]
 # Python環境とGitをインストール
 sudo apt install -y python3 python3-venv python3-pip git
 
@@ -160,6 +161,7 @@ python3 --version  # 3.10以上を確認
 #### A-1.6 プロジェクトのセットアップ
 
 ```bash
+# [OCI VM上で実行]
 # プロジェクトをクローン
 cd ~
 git clone https://github.com/your-username/VRC_Calendar_Discord_bot.git
@@ -179,6 +181,7 @@ pip install -r requirements.txt
 .envファイルは、Botが動作するために必要な設定値をまとめたファイルです。以下の手順で各値を取得し、設定してください。
 
 ```bash
+# [OCI VM上で実行]
 # .envファイルを作成
 cp .env.example .env
 nano .env
@@ -222,6 +225,7 @@ nano .env
 
 **プロジェクトがない場合**:
 ```bash
+# [ローカルマシンで実行]
 # gcloud CLIで新規作成
 gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
 ```
@@ -276,6 +280,7 @@ gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
 
 **手順（バケットを新規作成する場合）**:
 ```bash
+# [ローカルマシンで実行]
 # gcloud CLIでバケット作成
 gcloud storage buckets create gs://your-bucket-name \
   --location=asia-northeast1 \
@@ -357,8 +362,8 @@ PORT=8080
 
 **方法1: gcloud CLIで取得（推奨）**
 
-ローカルマシンで以下を実行:
 ```bash
+# [ローカルマシンで実行]
 # サービスアカウントがなければ作成
 gcloud iam service-accounts create calendar-bot-sa \
   --display-name="Calendar Bot Service Account"
@@ -381,8 +386,8 @@ gcloud iam service-accounts keys create credentials.json \
 
 **方法1: SCPで転送（推奨）**
 
-ローカルマシンから:
 ```bash
+# [ローカルマシンで実行]
 scp -i ~/.ssh/your_private_key credentials.json ubuntu@<VM_PUBLIC_IP>:/home/ubuntu/VRC_Calendar_Discord_bot/
 ```
 
@@ -391,6 +396,7 @@ scp -i ~/.ssh/your_private_key credentials.json ubuntu@<VM_PUBLIC_IP>:/home/ubun
 1. ローカルでJSONファイルを開いてすべてコピー
 2. VMで以下を実行:
 ```bash
+# [OCI VM上で実行]
 nano /home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
 ```
 3. JSONをペースト
@@ -401,6 +407,7 @@ nano /home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
 サービスアカウントには以下の権限が必要です:
 
 ```bash
+# [ローカルマシンで実行]
 # Secret Managerへのアクセス権（GCP Secret Managerを使う場合）
 gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
   --member="serviceAccount:calendar-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
@@ -430,13 +437,14 @@ gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
 GCPからダウンロードしたサービスアカウントJSONをVMに転送:
 
 ```bash
-# ローカルマシンから転送
+# [ローカルマシンで実行]
 scp -i ~/.ssh/your_private_key credentials.json ubuntu@<VM_PUBLIC_IP>:/home/ubuntu/VRC_Calendar_Discord_bot/
 ```
 
 または、GCPコンソールでJSON内容をコピーして直接作成:
 
 ```bash
+# [OCI VM上で実行]
 nano /home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
 # JSONをペースト、Ctrl+X → Y → Enter で保存
 ```
@@ -444,6 +452,7 @@ nano /home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
 #### A-1.9 動作テスト
 
 ```bash
+# [OCI VM上で実行]
 # 仮想環境を有効化
 source .venv/bin/activate
 
@@ -461,6 +470,7 @@ Logged in as VRC Calendar Bot#1234
 #### A-1.10 systemdサービスの設定（常駐化）
 
 ```bash
+# [OCI VM上で実行]
 sudo nano /etc/systemd/system/vrc-calendar-bot.service
 ```
 
@@ -492,6 +502,7 @@ WantedBy=multi-user.target
 **サービスの有効化と起動**:
 
 ```bash
+# [OCI VM上で実行]
 # デーモンをリロード
 sudo systemctl daemon-reload
 
@@ -508,6 +519,7 @@ sudo systemctl status vrc-calendar-bot
 **ログの確認**:
 
 ```bash
+# [OCI VM上で実行]
 # リアルタイムログ
 sudo journalctl -u vrc-calendar-bot -f
 
@@ -527,6 +539,7 @@ sudo journalctl -u vrc-calendar-bot -p err
 OCI VM上で直接cronを使う最もシンプルな方法:
 
 ```bash
+# [OCI VM上で実行]
 # cronジョブを編集
 crontab -e
 
@@ -537,6 +550,7 @@ crontab -e
 > **注意**: サーバーのタイムゾーンがJSTでない場合は調整が必要です。
 
 ```bash
+# [OCI VM上で実行]
 # タイムゾーンをJSTに設定
 sudo timedatectl set-timezone Asia/Tokyo
 ```
@@ -556,6 +570,7 @@ GCPのCloud Schedulerを使う方法。外部からのHTTPSアクセスが必要
 **2. OCI VMにcloudflaredをインストール**
 
 ```bash
+# [OCI VM上で実行]
 # Ubuntu/Debian
 curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
 sudo dpkg -i cloudflared.deb
@@ -568,6 +583,7 @@ sudo dpkg -i cloudflared.deb
 **3. Tunnelの作成と認証**
 
 ```bash
+# [OCI VM上で実行]
 # Cloudflareにログイン（ブラウザが開く）
 cloudflared tunnel login
 
@@ -581,6 +597,7 @@ cloudflared tunnel list
 **4. DNSルーティングの設定**
 
 ```bash
+# [OCI VM上で実行]
 # サブドメインをTunnelにルーティング
 cloudflared tunnel route dns vrc-calendar-bot bot.yourdomain.com
 ```
@@ -588,6 +605,7 @@ cloudflared tunnel route dns vrc-calendar-bot bot.yourdomain.com
 **5. 設定ファイルの作成**
 
 ```bash
+# [OCI VM上で実行]
 mkdir -p /home/ubuntu/.cloudflared
 nano /home/ubuntu/.cloudflared/config.yml
 ```
@@ -607,6 +625,7 @@ ingress:
 **6. cloudflaredのサービス化**
 
 ```bash
+# [OCI VM上で実行]
 sudo cloudflared service install
 sudo systemctl enable --now cloudflared
 
@@ -617,6 +636,7 @@ sudo systemctl status cloudflared
 **7. GCP側のPub/Sub設定**
 
 ```bash
+# [ローカルマシンで実行]
 # Pub/Subサブスクリプションを作成（Push先をCloudflare Tunnelに）
 gcloud pubsub subscriptions create weekly-notification-sub \
   --topic=weekly-notification-trigger \
@@ -627,6 +647,7 @@ gcloud pubsub subscriptions create weekly-notification-sub \
 ### A-3. バックアップの自動化
 
 ```bash
+# [OCI VM上で実行]
 # バックアップスクリプトを作成
 nano /home/ubuntu/VRC_Calendar_Discord_bot/backup.sh
 ```
@@ -639,6 +660,7 @@ python -c "from storage_backup import StorageBackup; sb = StorageBackup('$GCS_BU
 ```
 
 ```bash
+# [OCI VM上で実行]
 # 実行権限を付与
 chmod +x /home/ubuntu/VRC_Calendar_Discord_bot/backup.sh
 
@@ -657,6 +679,7 @@ Cloud Runのみを使用するシンプルな構成です。コールドスタ�
 ### B-1. GCPプロジェクトのセットアップ
 
 ```bash
+# [ローカルマシンで実行]
 # プロジェクト作成
 gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
 gcloud config set project vrc-calendar-bot
@@ -669,6 +692,7 @@ gcloud billing projects link vrc-calendar-bot --billing-account=BILLING_ACCOUNT_
 ### B-2. 必要なAPIの有効化
 
 ```bash
+# [ローカルマシンで実行]
 gcloud services enable \
   run.googleapis.com \
   cloudbuild.googleapis.com \
@@ -683,6 +707,7 @@ gcloud services enable \
 ### B-3. サービスアカウントの作成
 
 ```bash
+# [ローカルマシンで実行]
 # サービスアカウント作成
 gcloud iam service-accounts create calendar-bot-sa \
   --display-name="Calendar Bot Service Account"
@@ -704,6 +729,7 @@ gcloud iam service-accounts keys create credentials.json \
 ### B-4. Secret Managerへのシークレット登録
 
 ```bash
+# [ローカルマシンで実行]
 # Discord Bot Token
 echo -n "YOUR_DISCORD_BOT_TOKEN" | gcloud secrets create DISCORD_BOT_TOKEN --data-file=-
 
@@ -723,6 +749,7 @@ gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
 ### B-5. Cloud Storageバケットの作成
 
 ```bash
+# [ローカルマシンで実行]
 gcloud storage buckets create gs://vrc-calendar-bot-backup \
   --location=asia-northeast1 \
   --uniform-bucket-level-access
@@ -735,6 +762,7 @@ gcloud storage buckets add-iam-policy-binding gs://vrc-calendar-bot-backup \
 ### B-6. Cloud Runへのデプロイ
 
 ```bash
+# [ローカルマシンで実行]
 # Artifact Registryリポジトリ作成
 gcloud artifacts repositories create calendar-bot-repo \
   --repository-format=docker \
@@ -762,6 +790,7 @@ gcloud run deploy calendar-bot \
 ### B-7. 週次通知（Cloud Scheduler + Pub/Sub）
 
 ```bash
+# [ローカルマシンで実行]
 # サービスURL取得
 SERVICE_URL=$(gcloud run services describe calendar-bot --region=asia-northeast1 --format='value(status.url)')
 
@@ -863,6 +892,7 @@ gcloud scheduler jobs create pubsub weekly-notification-job \
 
 **OCI VM（systemd）**:
 ```bash
+# [OCI VM上で実行]
 # リアルタイムログ
 sudo journalctl -u vrc-calendar-bot -f
 
@@ -872,6 +902,7 @@ sudo journalctl -u vrc-calendar-bot -p err --since "1 hour ago"
 
 **Cloud Run**:
 ```bash
+# [ローカルマシンで実行]
 gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=calendar-bot" --limit=50
 ```
 
@@ -879,11 +910,13 @@ gcloud logging read "resource.type=cloud_run_revision AND resource.labels.servic
 
 **OCI VM**:
 ```bash
+# [OCI VM上で実行]
 sudo systemctl restart vrc-calendar-bot
 ```
 
 **Cloud Run**:
 ```bash
+# [ローカルマシンで実行]
 # 新しいリビジョンをデプロイ（再起動と同等）
 gcloud run services update calendar-bot --region=asia-northeast1
 ```
@@ -921,6 +954,7 @@ gcloud run services update calendar-bot --region=asia-northeast1
 ### OCI
 
 ```bash
+# [ローカルマシンで実行]
 # VMインスタンスを終了（OCIコンソールから）
 # または oci CLI を使用
 oci compute instance terminate --instance-id <INSTANCE_ID>
@@ -929,6 +963,7 @@ oci compute instance terminate --instance-id <INSTANCE_ID>
 ### GCP
 
 ```bash
+# [ローカルマシンで実行]
 # Cloud Runサービス削除
 gcloud run services delete calendar-bot --region=asia-northeast1
 
