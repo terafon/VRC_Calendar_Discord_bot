@@ -9,6 +9,8 @@
 3. [共通設定](#共通設定)
 4. [OAuth 2.0 ユーザー認証の設定](#oauth-20-ユーザー認証の設定)
 5. [トラブルシューティング](#トラブルシューティング)
+6. [コスト](#コスト)
+7. [リソースのクリーンアップ](#リソースのクリーンアップ)
 
 ---
 
@@ -19,29 +21,68 @@ OCI Always Free VMでDiscord Botを常時稼働させ、GCPのAPIサービスを
 ### 構成図
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Oracle Cloud Infrastructure (Always Free)                      │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  VM.Standard.E2.1.Micro / Ampere A1                       │  │
-│  │  ┌─────────────────┐  ┌─────────────────────────────────┐ │  │
-│  │  │ Discord Bot     │  │ Flask Server                  │ │  │
-│  │  │ (常時WebSocket) │  │ (通知/OAuthコールバック:8080) │ │  │
-│  │  └─────────────────┘  └─────────────────────────────────┘ │  │
-│  │           │                        ▲                      │  │
-│  │           │                        │ Cloudflare Tunnel    │  │
-│  └───────────┼────────────────────────┼──────────────────────┘  │
-└─────────────┼────────────────────────┼──────────────────────────┘
-              │                        │
-              ▼                        │
-┌─────────────────────────────────────────────────────────────────┐
-│  Google Cloud Platform                                          │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────────┐ │
-│  │ Calendar API │ │ Gemini API   │ │ Cloud Storage (backup)   │ │
-│  └──────────────┘ └──────────────┘ └──────────────────────────┘ │
-│  ┌──────────────┐ ┌──────────────┐                              │
-│  │ Firestore    │ │ Secret Mgr   │                              │
-│  └──────────────┘ └──────────────┘                              │
-└─────────────────────────────────────────────────────────────────┘
+                        ┌───────────────┐
+                        │  Discord API  │
+                        └───────┬───────┘
+                          WebSocket
+                           (常時接続)
+                                │
+┌───────────────────────────────┼─────────────────────────────────────┐
+│  Oracle Cloud Infrastructure (Always Free)                          │
+│  ┌────────────────────────────┼────────────────────────────────┐    │
+│  │  VM.Standard.E2.1.Micro / Ampere A1 (Ubuntu)               │    │
+│  │                            │                                │    │
+│  │  ┌────────────────────┐    │    ┌────────────────────────┐  │    │
+│  │  │ Discord Bot        │◄───┘    │ Flask Server (:8080)   │  │    │
+│  │  │ (discord.py)       │         │ ┌──────────────────┐   │  │    │
+│  │  │                    │         │ │ /weekly-          │   │  │    │
+│  │  │ - スラッシュコマンド│         │ │   notification    │   │  │    │
+│  │  │ - 予定CRUD         │         │ │ /oauth/callback   │   │  │    │
+│  │  │ - Gemini NLP連携   │         │ └──────────────────┘   │  │    │
+│  │  └────────┬───────────┘         └───────────▲────────────┘  │    │
+│  │           │                                 │               │    │
+│  │  ┌────────┴───────────┐          ┌──────────┴────────────┐  │    │
+│  │  │ cron               │          │ cloudflared           │  │    │
+│  │  │ - 週次通知 (月曜9時)│          │ (Cloudflare Tunnel)   │  │    │
+│  │  │ - バックアップ(6h) │          └──────────▲────────────┘  │    │
+│  │  └────────────────────┘                     │               │    │
+│  └─────────────────────────────────────────────┼───────────────┘    │
+└─────────────────────────────────────────────────┼───────────────────┘
+                                                  │
+                                    HTTPS (bot.yourdomain.com)
+                                                  │
+┌─────────────────────────────────────────────────┼───────────────────┐
+│  Cloudflare (Free)                              │                   │
+│  ┌──────────────────────────────────────────────┴────────────────┐  │
+│  │ DNS + Tunnel                                                  │  │
+│  │ bot.yourdomain.com ──► OCI VM :8080                           │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+          ▲                         ▲
+          │ OAuth リダイレクト       │ Google認証
+          │                         │
+      ┌───┴────┐             ┌──────┴──────┐
+      │ ユーザー│────────────►│ Google 認証 │
+      │ブラウザ │  ログイン   │ 画面        │
+      └────────┘             └─────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│  Google Cloud Platform (無料枠)                                      │
+│                                                                     │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐ │
+│  │ Calendar API    │  │ Gemini API      │  │ Cloud Firestore     │ │
+│  │                 │  │                 │  │                     │ │
+│  │ 予定の作成/更新 │  │ 自然言語解析    │  │ 予定・設定・タグ    │ │
+│  │ /削除/取得      │  │ (1.5 Flash)     │  │ OAuthトークン       │ │
+│  └─────────────────┘  └─────────────────┘  └─────────────────────┘ │
+│                                                                     │
+│  ┌─────────────────┐  ┌─────────────────┐                          │
+│  │ Cloud Storage   │  │ Secret Manager  │                          │
+│  │ (US リージョン) │  │                 │                          │
+│  │ Firestoreの     │  │ Bot Token 等の  │                          │
+│  │ 自動バックアップ│  │ シークレット管理│                          │
+│  └─────────────────┘  └─────────────────┘                          │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -268,9 +309,9 @@ gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
 
 ---
 
-###### 5. GCS_BUCKET_NAME（Cloud Storageバケット名）【オプション】
+###### 5. GCS_BUCKET_NAME（Cloud Storageバケット名）
 
-> **OCI VMで運用する場合は不要です。** VMのディスクにDBが永続化されるため。
+Firestoreデータの自動バックアップに使用するGCSバケットです。
 
 **取得場所**: [Google Cloud Console > Cloud Storage](https://console.cloud.google.com/storage/browser)
 
@@ -281,9 +322,9 @@ gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
 **手順（バケットを新規作成する場合）**:
 ```bash
 # [ローカルマシンで実行]
-# gcloud CLIでバケット作成
+# gcloud CLIでバケット作成（無料枠: US リージョン 5GB）
 gcloud storage buckets create gs://your-bucket-name \
-  --location=asia-northeast1 \
+  --location=us-central1 \
   --uniform-bucket-level-access
 ```
 
@@ -292,6 +333,7 @@ gcloud storage buckets create gs://your-bucket-name \
 ```
 
 > **注意**: バケット名はグローバルで一意である必要があります。既に使われている名前は使用できません。
+> **無料枠**: US リージョン（`us-east1`, `us-west1`, `us-central1`）に作成すれば 5GB まで無料です。
 
 ---
 
@@ -345,8 +387,8 @@ GOOGLE_APPLICATION_CREDENTIALS=/home/ubuntu/VRC_Calendar_Discord_bot/credentials
 # Googleカレンダー（オプション: サーバーごとに /カレンダー追加 と /カレンダー使用 で上書き可能）
 GOOGLE_CALENDAR_ID=abc123xyz@group.calendar.google.com
 
-# Cloud Storage（オプション: OCI VMで運用する場合は不要）
-# GCS_BUCKET_NAME=vrc-calendar-bot-backup
+# Cloud Storage（Firestoreバックアップ用）
+GCS_BUCKET_NAME=vrc-calendar-bot-backup
 
 # Gemini API
 GEMINI_API_KEY=AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz123456
@@ -631,6 +673,51 @@ gcloud pubsub subscriptions create weekly-notification-sub \
 
 ### 3. バックアップの自動化
 
+FirestoreのデータをJSON形式でGCSに自動バックアップします。
+
+#### 3.1 GCSバケットの作成
+
+まだバケットを作成していない場合は、以下のコマンドで作成します:
+
+```bash
+# [ローカルマシンで実行]
+gcloud storage buckets create gs://your-bucket-name \
+  --location=us-central1 \
+  --uniform-bucket-level-access
+```
+
+> **無料枠**: US リージョン（`us-east1`, `us-west1`, `us-central1`）に作成すれば 5GB まで無料です。
+
+#### 3.2 サービスアカウントへのGCS権限付与
+
+```bash
+# [ローカルマシンで実行]
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:calendar-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
+```
+
+#### 3.3 環境変数の設定
+
+`.env` に `GCS_BUCKET_NAME` を設定してください:
+
+```bash
+GCS_BUCKET_NAME=your-bucket-name
+```
+
+#### 3.4 手動でバックアップをテスト
+
+```bash
+# [OCI VM上で実行]
+source .venv/bin/activate
+cd /home/ubuntu/VRC_Calendar_Discord_bot
+python firestore_backup.py
+```
+
+成功すると `gs://your-bucket-name/firestore_backup/YYYYMMDD_HHMMSS.json` にアップロードされます。
+
+#### 3.5 cronで自動バックアップを設定
+
 ```bash
 # [OCI VM上で実行]
 # バックアップスクリプトを作成
@@ -641,7 +728,7 @@ nano /home/ubuntu/VRC_Calendar_Discord_bot/backup.sh
 #!/bin/bash
 source /home/ubuntu/VRC_Calendar_Discord_bot/.venv/bin/activate
 cd /home/ubuntu/VRC_Calendar_Discord_bot
-python -c "from storage_backup import StorageBackup; sb = StorageBackup('$GCS_BUCKET_NAME', 'calendar.db'); sb.backup_to_cloud()"
+python firestore_backup.py
 ```
 
 ```bash
@@ -653,6 +740,22 @@ chmod +x /home/ubuntu/VRC_Calendar_Discord_bot/backup.sh
 crontab -e
 # 以下を追加
 0 */6 * * * /home/ubuntu/VRC_Calendar_Discord_bot/backup.sh >> /var/log/backup.log 2>&1
+```
+
+> バックアップは最新30件を保持し、古いものは自動削除されます。
+
+#### 3.6 リストア（復元）
+
+```bash
+# [OCI VM上で実行]
+source .venv/bin/activate
+cd /home/ubuntu/VRC_Calendar_Discord_bot
+
+# バックアップファイル一覧を確認
+gsutil ls gs://your-bucket-name/firestore_backup/
+
+# リストア実行（既存データを上書きします）
+python firestore_backup.py --restore firestore_backup/20240101_120000.json
 ```
 
 ---
@@ -808,7 +911,7 @@ OAuth トークンが失効した場合はサービスアカウントにフォ�
 | カレンダー登録エラー | 権限不足 | `/カレンダー認証状態` で認証状態を確認、必要に応じて `/カレンダー認証` で再認証 |
 | 「曜日を特定できませんでした」 | NLP解析失敗 | 「毎週水曜14時に〜」など明確に指定 |
 | `audioop-lts`のインストールエラー | Python 3.13未満 | Python 3.13にアップグレードするか、`audioop-lts`を`requirements.txt`から削除（[1.5参照](#15-必要なパッケージのインストール)） |
-| DBがリセットされる | バックアップ未設定 | GCSバケットの権限とバックアップスクリプトを確認 |
+| バックアップが失敗する | GCS権限不足 | サービスアカウントに`roles/storage.objectAdmin`を付与、`GCS_BUCKET_NAME`が正しいか確認 |
 | OAuth認証で「redirect_uri_mismatch」 | リダイレクトURI不一致 | GCPコンソールの承認済みURIと`OAUTH_REDIRECT_URI`が完全一致しているか確認 |
 | OAuth認証で「access_denied」 | 同意画面のテストユーザー未追加 | OAuth同意画面でテストユーザーにGoogleアカウントを追加 |
 | OAuth認証後にカレンダー操作エラー | トークン期限切れ | `/カレンダー認証` で再認証するか、Google側でアクセスを取消していないか確認 |

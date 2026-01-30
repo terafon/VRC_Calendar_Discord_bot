@@ -211,7 +211,7 @@ async def send_weekly_notifications():
                 print(f'Failed to send notification to channel {channel_id}: {e}')
 
     # 最終通知時刻を更新
-    bot.db_manager.update_setting('last_notification_at', datetime.now().isoformat())
+    bot.db_manager.update_setting('last_notification_at', datetime.utcnow().isoformat())
 
 def run_discord_bot():
     """Discord Botを別スレッドで実行"""
