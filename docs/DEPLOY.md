@@ -926,34 +926,47 @@ gcloud scheduler jobs create pubsub weekly-notification-job \
 7. 以降、Bot はそのトークンでユーザーのカレンダーを操作
 ```
 
-### O-1. GCPコンソールでOAuthクライアントIDを作成
+### O-1. OAuth同意画面の設定
+
+> **重要**: OAuthクライアントIDを作成する前に、まず同意画面の設定が必要です。
+> 同意画面が未設定の場合、認証情報の作成時にエラーになります。
+
+1. [Google Cloud Console > APIとサービス > OAuth同意画面](https://console.cloud.google.com/apis/credentials/consent) にアクセス
+2. **User Type**: 「外部」を選択して「作成」をクリック
+3. **アプリ情報**を入力:
+   - **アプリ名**: VRC Calendar Bot（ユーザーに表示される名前）
+   - **ユーザーサポートメール**: 自分のメールアドレスを選択
+   - **アプリのロゴ**: 省略可
+4. **アプリのドメイン**: 省略可（テスト段階では不要）
+5. **デベロッパーの連絡先情報**: 自分のメールアドレスを入力
+6. 「保存して次へ」をクリック
+7. **スコープ**画面:
+   - 「スコープを追加または削除」をクリック
+   - フィルタで `calendar` を検索
+   - `https://www.googleapis.com/auth/calendar`（Google Calendar API）にチェック
+   - 「更新」→「保存して次へ」
+8. **テストユーザー**画面:
+   - 「ADD USERS」をクリック
+   - カレンダー認証に使用するGoogleアカウントのメールアドレスを追加
+   - 「保存して次へ」
+9. **概要**を確認して「ダッシュボードに戻る」
+
+> **注意**: OAuth同意画面が「テスト」モードの場合、テストユーザーとして追加されたGoogleアカウントのみ認証が可能です。
+> 一般公開する場合はGoogleの審査が必要です。
+
+### O-2. GCPコンソールでOAuthクライアントIDを作成
 
 1. [Google Cloud Console > APIとサービス > 認証情報](https://console.cloud.google.com/apis/credentials) にアクセス
 2. 「認証情報を作成」→「OAuthクライアントID」をクリック
 3. **アプリケーションの種類**: 「ウェブアプリケーション」を選択
 4. **名前**: 任意（例: `VRC Calendar Bot OAuth`）
-5. **承認済みのリダイレクトURI**: Bot がアクセス可能な URL を追加
+5. **承認済みのリダイレクトURI**: 「URIを追加」をクリックし、Bot がアクセス可能な URL を入力
    ```
    https://bot.yourdomain.com/oauth/callback
    ```
    > Cloudflare Tunnel 使用時は `https://` が必要です
 6. 「作成」をクリック
 7. 表示された **クライアントID** と **クライアントシークレット** を控える
-
-### O-2. OAuth同意画面の設定
-
-1. [Google Cloud Console > APIとサービス > OAuth同意画面](https://console.cloud.google.com/apis/credentials/consent) にアクセス
-2. **User Type**: 「外部」を選択
-3. 必要情報を入力:
-   - **アプリ名**: VRC Calendar Bot
-   - **ユーザーサポートメール**: 自分のメールアドレス
-   - **デベロッパーの連絡先メールアドレス**: 自分のメールアドレス
-4. **スコープ**: `https://www.googleapis.com/auth/calendar` を追加
-5. **テストユーザー**: テスト段階では自分のGoogleアカウントを追加
-6. 保存
-
-> **注意**: OAuth同意画面が「テスト」モードの場合、テストユーザーとして追加されたGoogleアカウントのみ認証が可能です。
-> 一般公開する場合はGoogleの審査が必要です。
 
 ### O-3. 環境変数の設定
 
@@ -966,7 +979,7 @@ GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-xxxxxxxxxx
 OAUTH_REDIRECT_URI=https://bot.yourdomain.com/oauth/callback
 ```
 
-> **OAUTH_REDIRECT_URI** は O-1 で設定した「承認済みのリダイレクトURI」と完全に一致する必要があります。
+> **OAUTH_REDIRECT_URI** は O-2 で設定した「承認済みのリダイレクトURI」と完全に一致する必要があります。
 
 ### O-4. Discordでの使い方
 
