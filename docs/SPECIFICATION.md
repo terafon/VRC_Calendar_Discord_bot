@@ -328,6 +328,15 @@ https://www.googleapis.com/auth/calendar
 - **権限制御**: `/カレンダー認証` `/カレンダー認証解除` は `manage_guild` 権限必須
 - **stateの有効期限**: Firestoreコンソールで `oauth_states` にTTLポリシー設定推奨（30分）
 
+### 8.4 バックアップ
+
+- **方式**: `firestore_backup.py` により Firestore の全データを JSON 化し GCS にアップロード
+- **対象**: guilds（サブコレクション含む）、counters、settings、oauth_states
+- **スケジュール**: cron で6時間ごとに自動実行
+- **保持数**: 最新30件（古いものは自動削除）
+- **リストア**: `firestore_backup.py --restore <BLOB_NAME>` で復元可能
+- **ストレージ**: GCS（US リージョン、5GB まで無料枠）
+
 ## 9. 制約事項
 
 ### 9.1 技術的制約

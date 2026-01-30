@@ -102,7 +102,7 @@ python main.py
 | サービス | 月額コスト |
 |---------|-----------|
 | OCI VM (Always Free) | $0 |
-| GCP（Firestore、Calendar API、Gemini） | $0（無料枠内） |
+| GCP（Firestore、Calendar API、Gemini、GCS） | $0（無料枠内） |
 | Cloudflare Tunnel | $0 |
 | **合計** | **$0（完全無料）** |
 
@@ -117,5 +117,6 @@ python main.py
 | `GOOGLE_OAUTH_CLIENT_ID` | OAuth クライアントID | Yes |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | OAuth クライアントシークレット | Yes |
 | `OAUTH_REDIRECT_URI` | OAuthリダイレクトURI | Yes |
+| `GCS_BUCKET_NAME` | バックアップ用GCSバケット名 | Yes |
 | `GOOGLE_CALENDAR_ID` | デフォルトのカレンダーID（サーバーごとに上書き可） | No |
 | `PORT` | HTTPポート（デフォルト: 8080） | No |
