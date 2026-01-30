@@ -7,7 +7,7 @@
 1. [構成概要](#構成概要)
 2. [OCI Always Free + GCP のセットアップ](#oci-always-free--gcp-のセットアップ)
 3. [共通設定](#共通設定)
-4. [OAuth 2.0 ユーザー認証の設定（オプション）](#oauth-20-ユーザー認証の設定オプション)
+4. [OAuth 2.0 ユーザー認証の設定](#oauth-20-ユーザー認証の設定)
 5. [トラブルシューティング](#トラブルシューティング)
 
 ---
@@ -24,8 +24,8 @@ OCI Always Free VMでDiscord Botを常時稼働させ、GCPのAPIサービスを
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │  VM.Standard.E2.1.Micro / Ampere A1                       │  │
 │  │  ┌─────────────────┐  ┌─────────────────────────────────┐ │  │
-│  │  │ Discord Bot     │  │ Flask Server (週次通知受信)    │ │  │
-│  │  │ (常時WebSocket) │  │ localhost:8080                 │ │  │
+│  │  │ Discord Bot     │  │ Flask Server                  │ │  │
+│  │  │ (常時WebSocket) │  │ (通知/OAuthコールバック:8080) │ │  │
 │  │  └─────────────────┘  └─────────────────────────────────┘ │  │
 │  │           │                        ▲                      │  │
 │  │           │                        │ Cloudflare Tunnel    │  │
@@ -312,7 +312,17 @@ gcloud storage buckets create gs://your-bucket-name \
 
 ---
 
-###### 7. PORT（サーバーポート）
+###### 7. GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET / OAUTH_REDIRECT_URI（OAuth認証用）
+
+OAuth 2.0 ユーザー認証で使用する値です。取得手順は [OAuth 2.0 ユーザー認証の設定](#oauth-20-ユーザー認証の設定) を参照してください。
+
+- `GOOGLE_OAUTH_CLIENT_ID`: GCPで作成したOAuthクライアントID
+- `GOOGLE_OAUTH_CLIENT_SECRET`: OAuthクライアントシークレット
+- `OAUTH_REDIRECT_URI`: Cloudflare Tunnel で公開したコールバックURL（例: `https://bot.yourdomain.com/oauth/callback`）
+
+---
+
+###### 8. PORT（サーバーポート）
 
 Flask/HTTPサーバーが使用するポート番号です。通常は変更不要。
 
@@ -340,6 +350,11 @@ GOOGLE_CALENDAR_ID=abc123xyz@group.calendar.google.com
 
 # Gemini API
 GEMINI_API_KEY=AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz123456
+
+# Google OAuth（カレンダー認証用）
+GOOGLE_OAUTH_CLIENT_ID=xxxxxxxxxxxx.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-xxxxxxxxxx
+OAUTH_REDIRECT_URI=https://bot.yourdomain.com/oauth/callback
 
 # Server
 PORT=8080
@@ -790,9 +805,9 @@ OAuth トークンが失効した場合はサービスアカウントにフォ�
 |------|------|--------|
 | Botがオフラインのまま | トークンが無効 | Discord Developer Portalで新しいトークンを生成 |
 | スラッシュコマンドが表示されない | コマンド未同期 | Botを再起動、または1時間待つ |
-| カレンダー登録エラー | 権限不足 | サービスアカウントのカレンダー共有を確認 |
+| カレンダー登録エラー | 権限不足 | `/カレンダー認証状態` で認証状態を確認、必要に応じて `/カレンダー認証` で再認証 |
 | 「曜日を特定できませんでした」 | NLP解析失敗 | 「毎週水曜14時に〜」など明確に指定 |
-| `audioop-lts`のインストールエラー | Python 3.13未満 | Python 3.13にアップグレードするか、`audioop-lts`を`requirements.txt`から削除（[1.5参照](#a-15-必要なパッケージのインストール)） |
+| `audioop-lts`のインストールエラー | Python 3.13未満 | Python 3.13にアップグレードするか、`audioop-lts`を`requirements.txt`から削除（[1.5参照](#15-必要なパッケージのインストール)） |
 | DBがリセットされる | バックアップ未設定 | GCSバケットの権限とバックアップスクリプトを確認 |
 | OAuth認証で「redirect_uri_mismatch」 | リダイレクトURI不一致 | GCPコンソールの承認済みURIと`OAUTH_REDIRECT_URI`が完全一致しているか確認 |
 | OAuth認証で「access_denied」 | 同意画面のテストユーザー未追加 | OAuth同意画面でテストユーザーにGoogleアカウントを追加 |
