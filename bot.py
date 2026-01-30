@@ -4,6 +4,7 @@ from discord.ext import commands
 import os
 import json
 import calendar
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -11,6 +12,7 @@ from nlp_processor import NLPProcessor
 from calendar_manager import GoogleCalendarManager
 from firestore_manager import FirestoreManager
 from recurrence_calculator import RecurrenceCalculator
+from oauth_handler import OAuthHandler
 
 RECURRENCE_TYPES = {
     "weekly": "毎週",
@@ -26,29 +28,56 @@ class CalendarBot(commands.Bot):
         calendar_manager: GoogleCalendarManager,
         db_manager: FirestoreManager,
         default_credentials_path: str,
-        default_calendar_id: str
+        default_calendar_id: str,
+        oauth_handler: Optional[OAuthHandler] = None,
     ):
         intents = discord.Intents.default()
         intents.message_content = True
-        
+
         super().__init__(
             command_prefix='!',
             intents=intents
         )
-        
+
         self.nlp_processor = nlp_processor
         self.calendar_manager = calendar_manager
         self.db_manager = db_manager
         self.default_credentials_path = default_credentials_path
         self.default_calendar_id = default_calendar_id
+        self.oauth_handler = oauth_handler
 
     def get_calendar_manager_for_guild(self, guild_id: Optional[int]) -> GoogleCalendarManager:
         if guild_id is None:
             return self.calendar_manager
-        account = self.db_manager.get_guild_calendar_account(str(guild_id))
+
+        guild_id_str = str(guild_id)
+
+        # 1. OAuth トークンを優先
+        oauth_tokens = self.db_manager.get_oauth_tokens(guild_id_str)
+        if oauth_tokens and self.oauth_handler:
+            try:
+                def on_token_refresh(new_access_token: str, new_expiry: str):
+                    self.db_manager.update_oauth_access_token(guild_id_str, new_access_token, new_expiry)
+
+                return GoogleCalendarManager.from_oauth_tokens(
+                    access_token=oauth_tokens['access_token'],
+                    refresh_token=oauth_tokens['refresh_token'],
+                    token_expiry=oauth_tokens.get('token_expiry'),
+                    client_id=self.oauth_handler.client_id,
+                    client_secret=self.oauth_handler.client_secret,
+                    calendar_id=oauth_tokens.get('calendar_id', 'primary'),
+                    on_token_refresh=on_token_refresh,
+                )
+            except Exception as e:
+                print(f"OAuth token error for guild {guild_id_str}, falling back to service account: {e}")
+
+        # 2. サービスアカウント（既存）
+        account = self.db_manager.get_guild_calendar_account(guild_id_str)
         if account:
             credentials_path = account.get('credentials_path') or self.default_credentials_path
             return GoogleCalendarManager(credentials_path, account['calendar_id'])
+
+        # 3. デフォルト
         return self.calendar_manager
     
     async def setup_hook(self):
@@ -228,6 +257,75 @@ def setup_commands(bot: CalendarBot):
         await interaction.response.defer(ephemeral=True)
         bot.db_manager.set_guild_calendar_account(str(interaction.guild_id), id)
         await interaction.followup.send(f"✅ このサーバーのカレンダーをID {id} に設定しました。", ephemeral=True)
+
+    @bot.tree.command(name="カレンダー認証", description="Google OAuth認証でカレンダーを連携します")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def calendar_oauth_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not bot.oauth_handler:
+            await interaction.followup.send("❌ OAuth が設定されていません。管理者に連絡してください。", ephemeral=True)
+            return
+
+        state = secrets.token_urlsafe(32)
+        guild_id = str(interaction.guild_id)
+        user_id = str(interaction.user.id)
+
+        bot.db_manager.save_oauth_state(state, guild_id, user_id)
+        auth_url = bot.oauth_handler.generate_auth_url(state)
+
+        embed = discord.Embed(
+            title="Google カレンダー認証",
+            description=(
+                "以下のリンクをクリックして Google アカウントでカレンダーへのアクセスを許可してください。\n\n"
+                f"[認証ページを開く]({auth_url})\n\n"
+                "認証が完了するとブラウザに「認証成功」と表示されます。"
+            ),
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text="このリンクは一度だけ使用できます")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @bot.tree.command(name="カレンダー認証解除", description="Google OAuth認証を解除します")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def calendar_oauth_revoke_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id)
+        tokens = bot.db_manager.get_oauth_tokens(guild_id)
+        if not tokens:
+            await interaction.followup.send("ℹ️ OAuth 認証は設定されていません。", ephemeral=True)
+            return
+
+        bot.db_manager.delete_oauth_tokens(guild_id)
+        await interaction.followup.send("✅ Google OAuth 認証を解除しました。サービスアカウント接続にフォールバックします。", ephemeral=True)
+
+    @bot.tree.command(name="カレンダー認証状態", description="カレンダーの認証状態を表示します")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def calendar_oauth_status_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id)
+        oauth_tokens = bot.db_manager.get_oauth_tokens(guild_id)
+
+        embed = discord.Embed(title="カレンダー認証状態", color=discord.Color.blue())
+
+        if oauth_tokens:
+            authenticated_by = oauth_tokens.get('authenticated_by', '不明')
+            authenticated_at = oauth_tokens.get('authenticated_at', '不明')
+            calendar_id = oauth_tokens.get('calendar_id', 'primary')
+            embed.add_field(name="方式", value="OAuth 2.0（ユーザー認証）", inline=False)
+            embed.add_field(name="認証者", value=f"<@{authenticated_by}>", inline=True)
+            embed.add_field(name="認証日時", value=authenticated_at, inline=True)
+            embed.add_field(name="カレンダーID", value=calendar_id, inline=False)
+        else:
+            account = bot.db_manager.get_guild_calendar_account(guild_id)
+            if account:
+                embed.add_field(name="方式", value="サービスアカウント", inline=False)
+                embed.add_field(name="アカウント名", value=account.get('name', '不明'), inline=True)
+                embed.add_field(name="カレンダーID", value=account.get('calendar_id', '不明'), inline=True)
+            else:
+                embed.add_field(name="方式", value="デフォルト（サービスアカウント）", inline=False)
+                embed.add_field(name="カレンダーID", value=bot.default_calendar_id, inline=True)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
     """予定追加処理"""
@@ -683,7 +781,12 @@ def create_help_embed() -> discord.Embed:
     )
     embed.add_field(
         name="カレンダー",
-        value="`/カレンダー一覧` `/カレンダー追加` `/カレンダー使用` で接続先を管理できます。",
+        value=(
+            "`/カレンダー一覧` `/カレンダー追加` `/カレンダー使用` で接続先を管理できます。\n"
+            "`/カレンダー認証` OAuth認証でユーザーのカレンダーに直接アクセス\n"
+            "`/カレンダー認証解除` OAuth認証を解除\n"
+            "`/カレンダー認証状態` 現在の認証方式を確認"
+        ),
         inline=False
     )
     return embed

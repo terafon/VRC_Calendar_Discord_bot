@@ -12,6 +12,7 @@ from bot import CalendarBot, setup_commands, create_weekly_embed
 from nlp_processor import NLPProcessor
 from calendar_manager import GoogleCalendarManager
 from firestore_manager import FirestoreManager
+from oauth_handler import OAuthHandler
 from google.cloud import secretmanager
 
 # 環境変数の読み込み
@@ -45,13 +46,26 @@ calendar_manager = GoogleCalendarManager(
     calendar_id=os.getenv('GOOGLE_CALENDAR_ID', 'primary')
 )
 
+# OAuth Handler（環境変数未設定時は None）
+oauth_client_id = get_secret('GOOGLE_OAUTH_CLIENT_ID')
+oauth_client_secret = get_secret('GOOGLE_OAUTH_CLIENT_SECRET')
+oauth_redirect_uri = os.getenv('OAUTH_REDIRECT_URI')
+
+oauth_handler = None
+if oauth_client_id and oauth_client_secret and oauth_redirect_uri:
+    oauth_handler = OAuthHandler(oauth_client_id, oauth_client_secret, oauth_redirect_uri)
+    print("OAuth handler initialized")
+else:
+    print("OAuth handler not configured (GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, OAUTH_REDIRECT_URI required)")
+
 # Discord Bot
 bot = CalendarBot(
     nlp_processor,
     calendar_manager,
     db_manager,
     default_credentials_path=os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'credentials.json'),
-    default_calendar_id=os.getenv('GOOGLE_CALENDAR_ID', 'primary')
+    default_calendar_id=os.getenv('GOOGLE_CALENDAR_ID', 'primary'),
+    oauth_handler=oauth_handler,
 )
 setup_commands(bot)
 
@@ -62,6 +76,69 @@ bot_ready = threading.Event()
 @app.route('/health', methods=['GET'])
 def health_check():
     return 'OK', 200
+
+@app.route('/oauth/callback', methods=['GET'])
+def oauth_callback():
+    """Google OAuth コールバックエンドポイント"""
+    if not oauth_handler:
+        return _oauth_error_html("OAuth が設定されていません。"), 500
+
+    error = request.args.get('error')
+    if error:
+        return _oauth_error_html(f"認証が拒否されました: {error}"), 400
+
+    code = request.args.get('code')
+    state = request.args.get('state')
+    if not code or not state:
+        return _oauth_error_html("不正なリクエストです。"), 400
+
+    # state 検証（ワンタイム）
+    state_data = db_manager.get_and_delete_oauth_state(state)
+    if not state_data:
+        return _oauth_error_html("認証セッションが無効または期限切れです。再度 /カレンダー認証 を実行してください。"), 400
+
+    guild_id = state_data['guild_id']
+    user_id = state_data['user_id']
+
+    try:
+        tokens = oauth_handler.exchange_code(code)
+    except Exception as e:
+        print(f"OAuth token exchange error: {e}")
+        return _oauth_error_html("トークンの取得に失敗しました。再度お試しください。"), 500
+
+    # Firestore に保存（calendar_id は primary をデフォルト、後でコマンドで変更可能）
+    now = datetime.utcnow().isoformat()
+    db_manager.save_oauth_tokens(
+        guild_id=guild_id,
+        access_token=tokens['access_token'],
+        refresh_token=tokens['refresh_token'],
+        token_expiry=tokens.get('token_expiry', ''),
+        calendar_id='primary',
+        authenticated_by=user_id,
+        authenticated_at=now,
+    )
+
+    return _oauth_success_html(), 200
+
+
+def _oauth_success_html() -> str:
+    return """<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><title>認証成功</title>
+<style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#2c2f33;color:#fff}
+.card{background:#36393f;padding:2rem 3rem;border-radius:12px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.3)}
+h1{color:#43b581;margin-bottom:.5rem}p{color:#b9bbbe}</style></head>
+<body><div class="card"><h1>認証成功</h1><p>Google カレンダーとの連携が完了しました。<br>このページを閉じて Discord に戻ってください。</p></div></body></html>"""
+
+
+def _oauth_error_html(message: str) -> str:
+    import html
+    safe_msg = html.escape(message)
+    return f"""<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><title>認証エラー</title>
+<style>body{{font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#2c2f33;color:#fff}}
+.card{{background:#36393f;padding:2rem 3rem;border-radius:12px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.3)}}
+h1{{color:#f04747;margin-bottom:.5rem}}p{{color:#b9bbbe}}</style></head>
+<body><div class="card"><h1>認証エラー</h1><p>{safe_msg}</p></div></body></html>"""
 
 @app.route('/weekly-notification', methods=['POST'])
 def weekly_notification_handler():
