@@ -914,6 +914,19 @@ gcloud scheduler jobs create pubsub weekly-notification-job \
 サービスアカウント認証に加え、OAuth 2.0 を使ってユーザー自身のGoogleカレンダーに直接アクセスできます。
 この設定を行うと、サービスアカウントへのカレンダー共有設定が不要になります。
 
+### 前提条件
+
+OAuth 認証では、Google がユーザーのブラウザを Bot の Flask サーバー（`/oauth/callback`）にリダイレクトします。
+そのため、**Flask サーバーに外部から HTTPS でアクセスできる環境**が必要です。
+
+| 環境 | 必要な設定 |
+|------|-----------|
+| OCI VM | Cloudflare Tunnel の設定が必要（[A-2 方法2 参照](#方法2-cloud-scheduler--pubsub--cloudflare-tunnel)） |
+| Cloud Run | デフォルトで HTTPS URL が発行されるため追加設定不要 |
+
+> **OCI VM の場合**: 週次通知を cron（方法1）で運用していても、OAuth を使うには Cloudflare Tunnel が必要です。
+> Tunnel の設定手順は [A-2 方法2](#方法2-cloud-scheduler--pubsub--cloudflare-tunnel) の「Cloudflare Tunnelのセットアップ」を参照してください。
+
 ### OAuth の認証フロー
 
 ```
@@ -1062,9 +1075,10 @@ gcloud run services update calendar-bot --region=asia-northeast1
 |----------|------|------|
 | OCI VM | $0 | Always Free対象 |
 | GCP Calendar API | $0 | 無料枠内 |
+| GCP Firestore | $0 | 無料枠（1GiB, 50K reads/日）内 |
 | GCP Storage | $0 | 5GB未満は無料 |
 | GCP Secret Manager | $0 | 6シークレットまで無料 |
-| Cloudflare Tunnel | $0 | Freeプラン |
+| Cloudflare Tunnel | $0 | Freeプラン（OAuth利用時は必須） |
 | **合計** | **$0** | **完全無料** |
 
 ### 方式B: Cloud Run
