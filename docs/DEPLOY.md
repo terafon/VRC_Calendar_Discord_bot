@@ -155,8 +155,42 @@ sudo apt update && sudo apt upgrade -y
 sudo apt install -y python3 python3-venv python3-pip git
 
 # バージョン確認
-python3 --version  # 3.10以上を確認
+python3 --version  # 3.13以上を推奨
 ```
+
+> **Python 3.13未満の場合**: `requirements.txt`に含まれる`audioop-lts`はPython 3.13以上が必要です。
+> 3.12以下の場合は以下のいずれかの対応が必要です。
+>
+> **対応1: Python 3.13にアップグレード（推奨）**
+>
+> ```bash
+> # [OCI VM上で実行（Ubuntu）]
+> # deadsnakes PPA を追加
+> sudo add-apt-repository ppa:deadsnakes/ppa -y
+> sudo apt update
+>
+> # Python 3.13 をインストール
+> sudo apt install python3.13 python3.13-venv python3.13-dev -y
+>
+> # 確認
+> python3.13 --version
+>
+> # venv を Python 3.13 で作り直す
+> rm -rf .venv
+> python3.13 -m venv .venv
+> source .venv/bin/activate
+> pip install --upgrade pip
+> pip install -r requirements.txt
+> ```
+>
+> **対応2: audioop-lts を requirements.txt から削除**
+>
+> Python 3.12以下には`audioop`モジュールが組み込まれているため、`audioop-lts`は不要です。
+> ```bash
+> # [OCI VM上で実行]
+> sed -i '/audioop-lts/d' requirements.txt
+> pip install -r requirements.txt
+> ```
 
 #### A-1.6 プロジェクトのセットアップ
 
@@ -875,6 +909,86 @@ gcloud scheduler jobs create pubsub weekly-notification-job \
 
 ---
 
+## OAuth 2.0 ユーザー認証の設定（オプション）
+
+サービスアカウント認証に加え、OAuth 2.0 を使ってユーザー自身のGoogleカレンダーに直接アクセスできます。
+この設定を行うと、サービスアカウントへのカレンダー共有設定が不要になります。
+
+### OAuth の認証フロー
+
+```
+1. ユーザーが Discord で /カレンダー認証 を実行
+2. Bot が OAuth認証URL を ephemeral メッセージで送信
+3. ユーザーがブラウザで Google認証 → カレンダーアクセスを許可
+4. Google が Flask の /oauth/callback にリダイレクト
+5. コールバックで state 検証 → コードをトークンに交換 → Firestore に保存
+6. ブラウザに「認証成功」ページを表示
+7. 以降、Bot はそのトークンでユーザーのカレンダーを操作
+```
+
+### O-1. GCPコンソールでOAuthクライアントIDを作成
+
+1. [Google Cloud Console > APIとサービス > 認証情報](https://console.cloud.google.com/apis/credentials) にアクセス
+2. 「認証情報を作成」→「OAuthクライアントID」をクリック
+3. **アプリケーションの種類**: 「ウェブアプリケーション」を選択
+4. **名前**: 任意（例: `VRC Calendar Bot OAuth`）
+5. **承認済みのリダイレクトURI**: Bot がアクセス可能な URL を追加
+   ```
+   https://bot.yourdomain.com/oauth/callback
+   ```
+   > Cloudflare Tunnel 使用時は `https://` が必要です
+6. 「作成」をクリック
+7. 表示された **クライアントID** と **クライアントシークレット** を控える
+
+### O-2. OAuth同意画面の設定
+
+1. [Google Cloud Console > APIとサービス > OAuth同意画面](https://console.cloud.google.com/apis/credentials/consent) にアクセス
+2. **User Type**: 「外部」を選択
+3. 必要情報を入力:
+   - **アプリ名**: VRC Calendar Bot
+   - **ユーザーサポートメール**: 自分のメールアドレス
+   - **デベロッパーの連絡先メールアドレス**: 自分のメールアドレス
+4. **スコープ**: `https://www.googleapis.com/auth/calendar` を追加
+5. **テストユーザー**: テスト段階では自分のGoogleアカウントを追加
+6. 保存
+
+> **注意**: OAuth同意画面が「テスト」モードの場合、テストユーザーとして追加されたGoogleアカウントのみ認証が可能です。
+> 一般公開する場合はGoogleの審査が必要です。
+
+### O-3. 環境変数の設定
+
+`.env` ファイルに以下を追加:
+
+```bash
+# Google OAuth（カレンダー認証用）
+GOOGLE_OAUTH_CLIENT_ID=xxxxxxxxxxxx.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-xxxxxxxxxx
+OAUTH_REDIRECT_URI=https://bot.yourdomain.com/oauth/callback
+```
+
+> **OAUTH_REDIRECT_URI** は O-1 で設定した「承認済みのリダイレクトURI」と完全に一致する必要があります。
+
+### O-4. Discordでの使い方
+
+| コマンド | 説明 | 必要権限 |
+|---------|------|---------|
+| `/カレンダー認証` | OAuth認証URLを取得（ephemeral） | manage_guild |
+| `/カレンダー認証解除` | OAuth認証を解除 | manage_guild |
+| `/カレンダー認証状態` | 認証方式・状態を確認 | manage_guild |
+
+### O-5. 認証の優先順位
+
+Bot は以下の優先順位でカレンダーにアクセスします:
+
+1. **OAuth トークン**（`/カレンダー認証` で設定）
+2. **サービスアカウント**（`/カレンダー使用` で設定）
+3. **デフォルト**（環境変数のサービスアカウント）
+
+OAuth が設定されている場合、サービスアカウントよりも優先されます。
+OAuth トークンが失効した場合はサービスアカウントにフォールバックします。
+
+---
+
 ## トラブルシューティング
 
 ### よくある問題と解決策
@@ -885,7 +999,11 @@ gcloud scheduler jobs create pubsub weekly-notification-job \
 | スラッシュコマンドが表示されない | コマンド未同期 | Botを再起動、または1時間待つ |
 | カレンダー登録エラー | 権限不足 | サービスアカウントのカレンダー共有を確認 |
 | 「曜日を特定できませんでした」 | NLP解析失敗 | 「毎週水曜14時に〜」など明確に指定 |
+| `audioop-lts`のインストールエラー | Python 3.13未満 | Python 3.13にアップグレードするか、`audioop-lts`を`requirements.txt`から削除（[A-1.5参照](#a-15-必要なパッケージのインストール)） |
 | DBがリセットされる | バックアップ未設定 | GCSバケットの権限とバックアップスクリプトを確認 |
+| OAuth認証で「redirect_uri_mismatch」 | リダイレクトURI不一致 | GCPコンソールの承認済みURIと`OAUTH_REDIRECT_URI`が完全一致しているか確認 |
+| OAuth認証で「access_denied」 | 同意画面のテストユーザー未追加 | OAuth同意画面でテストユーザーにGoogleアカウントを追加 |
+| OAuth認証後にカレンダー操作エラー | トークン期限切れ | `/カレンダー認証` で再認証するか、Google側でアクセスを取消していないか確認 |
 | Cloud Runでタイムアウト | コールドスタート | `--min-instances=1`に変更（コスト増） |
 
 ### ログの確認方法

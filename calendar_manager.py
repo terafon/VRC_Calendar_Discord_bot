@@ -1,7 +1,11 @@
 from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials as OAuthCredentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable
+
+SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 class GoogleCalendarManager:
     def __init__(self, credentials_path: str, calendar_id: str):
@@ -11,10 +15,50 @@ class GoogleCalendarManager:
         """
         self.credentials = service_account.Credentials.from_service_account_file(
             credentials_path,
-            scopes=['https://www.googleapis.com/auth/calendar']
+            scopes=SCOPES
         )
         self.service = build('calendar', 'v3', credentials=self.credentials)
         self.calendar_id = calendar_id
+        self._on_token_refresh: Optional[Callable] = None
+
+    @classmethod
+    def from_oauth_tokens(
+        cls,
+        access_token: str,
+        refresh_token: str,
+        token_expiry: Optional[str],
+        client_id: str,
+        client_secret: str,
+        calendar_id: str,
+        on_token_refresh: Optional[Callable] = None,
+    ) -> "GoogleCalendarManager":
+        """OAuth トークンから GoogleCalendarManager を構築する"""
+        expiry = None
+        if token_expiry:
+            try:
+                expiry = datetime.fromisoformat(token_expiry)
+            except (ValueError, TypeError):
+                pass
+
+        creds = OAuthCredentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=SCOPES,
+            expiry=expiry,
+        )
+
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+
+        instance = cls.__new__(cls)
+        instance.credentials = creds
+        instance.service = build('calendar', 'v3', credentials=creds)
+        instance.calendar_id = calendar_id
+        instance._on_token_refresh = on_token_refresh
+        return instance
 
     def create_events(
         self,

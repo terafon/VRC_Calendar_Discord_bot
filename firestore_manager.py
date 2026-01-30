@@ -471,6 +471,62 @@ class FirestoreManager:
 
         return self.get_calendar_account(guild_id, account_id)
 
+    # ---- OAuth トークン管理 ----
+
+    def save_oauth_tokens(
+        self,
+        guild_id: str,
+        access_token: str,
+        refresh_token: str,
+        token_expiry: str,
+        calendar_id: str,
+        authenticated_by: str,
+        authenticated_at: str,
+    ):
+        """OAuth トークンを保存"""
+        self._guild_ref(guild_id).collection("oauth_tokens").document("google").set({
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_expiry": token_expiry,
+            "calendar_id": calendar_id,
+            "authenticated_by": authenticated_by,
+            "authenticated_at": authenticated_at,
+        })
+
+    def get_oauth_tokens(self, guild_id: str) -> Optional[dict]:
+        """OAuth トークンを取得"""
+        doc = self._guild_ref(guild_id).collection("oauth_tokens").document("google").get()
+        return doc.to_dict() if doc.exists else None
+
+    def update_oauth_access_token(self, guild_id: str, access_token: str, token_expiry: str):
+        """リフレッシュ後のアクセストークンを更新"""
+        self._guild_ref(guild_id).collection("oauth_tokens").document("google").update({
+            "access_token": access_token,
+            "token_expiry": token_expiry,
+        })
+
+    def delete_oauth_tokens(self, guild_id: str):
+        """OAuth トークンを削除（認証解除）"""
+        self._guild_ref(guild_id).collection("oauth_tokens").document("google").delete()
+
+    def save_oauth_state(self, state: str, guild_id: str, user_id: str):
+        """CSRF state を保存"""
+        self.db.collection("oauth_states").document(state).set({
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "created_at": datetime.utcnow().isoformat(),
+        })
+
+    def get_and_delete_oauth_state(self, state: str) -> Optional[dict]:
+        """CSRF state をワンタイム検証（取得して削除）"""
+        ref = self.db.collection("oauth_states").document(state)
+        doc = ref.get()
+        if not doc.exists:
+            return None
+        data = doc.to_dict()
+        ref.delete()
+        return data
+
     # ---- private helpers ----
 
     def _get_active_events(self, guild_id: Optional[str] = None) -> List[dict]:
