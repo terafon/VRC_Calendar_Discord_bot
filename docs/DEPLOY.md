@@ -4,36 +4,28 @@
 
 ## 目次
 
-1. [デプロイ方式の選択](#デプロイ方式の選択)
-2. [方式A: OCI Always Free + GCP（推奨・完全無料）](#方式a-oci-always-free--gcp推奨完全無料)
-3. [方式B: Cloud Run単体（シンプル・低コスト）](#方式b-cloud-run単体シンプル低コスト)
-4. [共通設定](#共通設定)
+1. [構成概要](#構成概要)
+2. [OCI Always Free + GCP のセットアップ](#oci-always-free--gcp-のセットアップ)
+3. [共通設定](#共通設定)
+4. [OAuth 2.0 ユーザー認証の設定](#oauth-20-ユーザー認証の設定)
 5. [トラブルシューティング](#トラブルシューティング)
 
 ---
 
-## デプロイ方式の選択
+## 構成概要
 
-Discord Botは**常時WebSocket接続を維持**する必要があるため、サーバーレス環境との相性に注意が必要です。
-
-### 方式比較
-
-| 方式 | 月額コスト | 常時稼働 | 複雑さ | おすすめ |
-|------|-----------|----------|--------|----------|
-| **A: OCI + GCP** | 完全無料 | ◎ | やや複雑 | 常時稼働が必要な場合 |
-| **B: Cloud Run** | ~$0.20 | △ | シンプル | たまに使う程度の場合 |
+OCI Always Free VMでDiscord Botを常時稼働させ、GCPのAPIサービスをバックエンドとして利用する構成です。完全無料で運用できます。
 
 ### 構成図
 
 ```
-【方式A: OCI Always Free + GCP】
 ┌─────────────────────────────────────────────────────────────────┐
 │  Oracle Cloud Infrastructure (Always Free)                      │
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │  VM.Standard.E2.1.Micro / Ampere A1                       │  │
 │  │  ┌─────────────────┐  ┌─────────────────────────────────┐ │  │
-│  │  │ Discord Bot     │  │ Flask Server (週次通知受信)    │ │  │
-│  │  │ (常時WebSocket) │  │ localhost:8080                 │ │  │
+│  │  │ Discord Bot     │  │ Flask Server                  │ │  │
+│  │  │ (常時WebSocket) │  │ (通知/OAuthコールバック:8080) │ │  │
 │  │  └─────────────────┘  └─────────────────────────────────┘ │  │
 │  │           │                        ▲                      │  │
 │  │           │                        │ Cloudflare Tunnel    │  │
@@ -47,44 +39,18 @@ Discord Botは**常時WebSocket接続を維持**する必要があるため、�
 │  │ Calendar API │ │ Gemini API   │ │ Cloud Storage (backup)   │ │
 │  └──────────────┘ └──────────────┘ └──────────────────────────┘ │
 │  ┌──────────────┐ ┌──────────────┐                              │
-│  │ Scheduler    │→│ Pub/Sub      │→ HTTPS Push                  │
-│  │ (月曜9:00)   │ │ (トリガー)   │                              │
+│  │ Firestore    │ │ Secret Mgr   │                              │
 │  └──────────────┘ └──────────────┘                              │
-└─────────────────────────────────────────────────────────────────┘
-
-【方式B: Cloud Run単体】
-┌─────────────────────────────────────────────────────────────────┐
-│  Google Cloud Platform                                          │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  Cloud Run (min-instances=0)                              │  │
-│  │  ┌─────────────────┐  ┌─────────────────────────────────┐ │  │
-│  │  │ Discord Bot     │  │ Flask Server                    │ │  │
-│  │  │ (コールドスタート│  │ (HTTPエンドポイント)           │ │  │
-│  │  │  で起動)        │  │                                 │ │  │
-│  │  └─────────────────┘  └─────────────────────────────────┘ │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────────┐ │
-│  │ Calendar API │ │ Gemini API   │ │ Cloud Storage (backup)   │ │
-│  └──────────────┘ └──────────────┘ └──────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 方式A: OCI Always Free + GCP（推奨・完全無料）
+## OCI Always Free + GCP のセットアップ
 
-常時稼働が必要なDiscord BotをOCI Always Free VMで動かし、GCPのAPIサービスをバックエンドとして利用する構成です。
+### 1. OCI（Oracle Cloud）のセットアップ
 
-### なぜこの構成が推奨されるのか
-
-1. **完全無料**: OCI Always Freeは期限なしで無料、GCPも無料枠内で収まる
-2. **常時稼働**: VMは24時間稼働するため、Botが常にオンライン
-3. **コールドスタートなし**: Cloud Runと違い、起動待ちがない
-4. **安定性**: WebSocket接続が切断されにくい
-
-### A-1. OCI（Oracle Cloud）のセットアップ
-
-#### A-1.1 OCIアカウントの作成
+#### 1.1 OCIアカウントの作成
 
 1. [Oracle Cloud Free Tier](https://www.oracle.com/cloud/free/)にアクセス
 2. 「無料で始める」をクリック
@@ -93,7 +59,7 @@ Discord Botは**常時WebSocket接続を維持**する必要があるため、�
 
 > **重要**: Always Free VMはホームリージョンでのみ作成可能です
 
-#### A-1.2 VMインスタンスの作成
+#### 1.2 VMインスタンスの作成
 
 1. OCIコンソールにログイン
 2. 「コンピュート」→「インスタンス」→「インスタンスの作成」
@@ -125,7 +91,7 @@ Discord Botは**常時WebSocket接続を維持**する必要があるため、�
    - 自分の公開鍵をアップロード、または新規生成
 ```
 
-#### A-1.3 セキュリティリストの設定
+#### 1.3 セキュリティリストの設定
 
 OCIコンソールで「ネットワーキング」→「仮想クラウド・ネットワーク」→ VCN選択 →「セキュリティ・リスト」
 
@@ -137,7 +103,7 @@ OCIコンソールで「ネットワーキング」→「仮想クラウド・�
 | 0.0.0.0/0 | TCP | 80 | HTTP（Cloudflare Tunnel用） |
 | 0.0.0.0/0 | TCP | 443 | HTTPS（Cloudflare Tunnel用） |
 
-#### A-1.4 VMへのSSH接続
+#### 1.4 VMへのSSH接続
 
 ```bash
 # [ローカルマシンで実行] SSHで接続
@@ -147,7 +113,7 @@ ssh -i ~/.ssh/your_private_key ubuntu@<VM_PUBLIC_IP>
 sudo apt update && sudo apt upgrade -y
 ```
 
-#### A-1.5 必要なパッケージのインストール
+#### 1.5 必要なパッケージのインストール
 
 ```bash
 # [OCI VM上で実行]
@@ -192,7 +158,7 @@ python3 --version  # 3.13以上を推奨
 > pip install -r requirements.txt
 > ```
 
-#### A-1.6 プロジェクトのセットアップ
+#### 1.6 プロジェクトのセットアップ
 
 ```bash
 # [OCI VM上で実行]
@@ -210,7 +176,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-#### A-1.7 環境変数ファイルの作成
+#### 1.7 環境変数ファイルの作成
 
 .envファイルは、Botが動作するために必要な設定値をまとめたファイルです。以下の手順で各値を取得し、設定してください。
 
@@ -346,7 +312,17 @@ gcloud storage buckets create gs://your-bucket-name \
 
 ---
 
-###### 7. PORT（サーバーポート）
+###### 7. GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET / OAUTH_REDIRECT_URI（OAuth認証用）
+
+OAuth 2.0 ユーザー認証で使用する値です。取得手順は [OAuth 2.0 ユーザー認証の設定](#oauth-20-ユーザー認証の設定) を参照してください。
+
+- `GOOGLE_OAUTH_CLIENT_ID`: GCPで作成したOAuthクライアントID
+- `GOOGLE_OAUTH_CLIENT_SECRET`: OAuthクライアントシークレット
+- `OAUTH_REDIRECT_URI`: Cloudflare Tunnel で公開したコールバックURL（例: `https://bot.yourdomain.com/oauth/callback`）
+
+---
+
+###### 8. PORT（サーバーポート）
 
 Flask/HTTPサーバーが使用するポート番号です。通常は変更不要。
 
@@ -375,6 +351,11 @@ GOOGLE_CALENDAR_ID=abc123xyz@group.calendar.google.com
 # Gemini API
 GEMINI_API_KEY=AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz123456
 
+# Google OAuth（カレンダー認証用）
+GOOGLE_OAUTH_CLIENT_ID=xxxxxxxxxxxx.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-xxxxxxxxxx
+OAUTH_REDIRECT_URI=https://bot.yourdomain.com/oauth/callback
+
 # Server
 PORT=8080
 ```
@@ -388,7 +369,7 @@ PORT=8080
 
 ---
 
-#### A-1.8 GCPサービスアカウント鍵の配置（credentials.json）
+#### 1.8 GCPサービスアカウント鍵の配置（credentials.json）
 
 `.env`で指定したパスに、GCPサービスアカウントのJSONファイルを配置する必要があります。
 
@@ -453,37 +434,7 @@ gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
   --role="roles/storage.objectAdmin"
 ```
 
-##### Googleカレンダーへの共有設定
-
-サービスアカウントがカレンダーにアクセスできるように、共有設定が必要です:
-
-1. [Googleカレンダー](https://calendar.google.com/)を開く
-2. 対象カレンダーの「⋮」→「設定と共有」
-3. 「特定のユーザーとの共有」セクション
-4. 「ユーザーを追加」をクリック
-5. サービスアカウントのメールアドレスを入力:
-   ```
-   calendar-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
-   ```
-6. 権限: 「変更および共有の管理権限」を選択
-7. 「送信」をクリック
-
-GCPからダウンロードしたサービスアカウントJSONをVMに転送:
-
-```bash
-# [ローカルマシンで実行]
-scp -i ~/.ssh/your_private_key credentials.json ubuntu@<VM_PUBLIC_IP>:/home/ubuntu/VRC_Calendar_Discord_bot/
-```
-
-または、GCPコンソールでJSON内容をコピーして直接作成:
-
-```bash
-# [OCI VM上で実行]
-nano /home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
-# JSONをペースト、Ctrl+X → Y → Enter で保存
-```
-
-#### A-1.9 動作テスト
+#### 1.9 動作テスト
 
 ```bash
 # [OCI VM上で実行]
@@ -501,7 +452,7 @@ Logged in as VRC Calendar Bot#1234
 
 `Ctrl+C`で停止。
 
-#### A-1.10 systemdサービスの設定（常駐化）
+#### 1.10 systemdサービスの設定（常駐化）
 
 ```bash
 # [OCI VM上で実行]
@@ -564,7 +515,7 @@ sudo journalctl -u vrc-calendar-bot -n 100
 sudo journalctl -u vrc-calendar-bot -p err
 ```
 
-### A-2. 週次通知の設定
+### 2. 週次通知の設定
 
 週次通知には2つの方法があります。
 
@@ -678,7 +629,7 @@ gcloud pubsub subscriptions create weekly-notification-sub \
   --push-auth-service-account=calendar-bot-sa@YOUR_PROJECT.iam.gserviceaccount.com
 ```
 
-### A-3. バックアップの自動化
+### 3. バックアップの自動化
 
 ```bash
 # [OCI VM上で実行]
@@ -702,147 +653,6 @@ chmod +x /home/ubuntu/VRC_Calendar_Discord_bot/backup.sh
 crontab -e
 # 以下を追加
 0 */6 * * * /home/ubuntu/VRC_Calendar_Discord_bot/backup.sh >> /var/log/backup.log 2>&1
-```
-
----
-
-## 方式B: Cloud Run単体（シンプル・低コスト）
-
-Cloud Runのみを使用するシンプルな構成です。コールドスタートがあるため、常時使用には向きませんが、設定は簡単です。
-
-### B-1. GCPプロジェクトのセットアップ
-
-```bash
-# [ローカルマシンで実行]
-# プロジェクト作成
-gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
-gcloud config set project vrc-calendar-bot
-
-# 課金アカウントをリンク（必須）
-gcloud billing accounts list
-gcloud billing projects link vrc-calendar-bot --billing-account=BILLING_ACCOUNT_ID
-```
-
-### B-2. 必要なAPIの有効化
-
-```bash
-# [ローカルマシンで実行]
-gcloud services enable \
-  run.googleapis.com \
-  cloudbuild.googleapis.com \
-  cloudscheduler.googleapis.com \
-  pubsub.googleapis.com \
-  secretmanager.googleapis.com \
-  calendar-json.googleapis.com \
-  storage.googleapis.com \
-  artifactregistry.googleapis.com
-```
-
-### B-3. サービスアカウントの作成
-
-```bash
-# [ローカルマシンで実行]
-# サービスアカウント作成
-gcloud iam service-accounts create calendar-bot-sa \
-  --display-name="Calendar Bot Service Account"
-
-# 必要な権限を付与
-gcloud projects add-iam-policy-binding vrc-calendar-bot \
-  --member="serviceAccount:calendar-bot-sa@vrc-calendar-bot.iam.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor"
-
-gcloud projects add-iam-policy-binding vrc-calendar-bot \
-  --member="serviceAccount:calendar-bot-sa@vrc-calendar-bot.iam.gserviceaccount.com" \
-  --role="roles/storage.objectAdmin"
-
-# ローカル開発用にキーをダウンロード
-gcloud iam service-accounts keys create credentials.json \
-  --iam-account=calendar-bot-sa@vrc-calendar-bot.iam.gserviceaccount.com
-```
-
-### B-4. Secret Managerへのシークレット登録
-
-```bash
-# [ローカルマシンで実行]
-# Discord Bot Token
-echo -n "YOUR_DISCORD_BOT_TOKEN" | gcloud secrets create DISCORD_BOT_TOKEN --data-file=-
-
-# Gemini API Key
-echo -n "YOUR_GEMINI_API_KEY" | gcloud secrets create GEMINI_API_KEY --data-file=-
-
-# アクセス権を付与
-gcloud secrets add-iam-policy-binding DISCORD_BOT_TOKEN \
-  --member="serviceAccount:calendar-bot-sa@vrc-calendar-bot.iam.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor"
-
-gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
-  --member="serviceAccount:calendar-bot-sa@vrc-calendar-bot.iam.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor"
-```
-
-### B-5. Cloud Storageバケットの作成
-
-```bash
-# [ローカルマシンで実行]
-gcloud storage buckets create gs://vrc-calendar-bot-backup \
-  --location=asia-northeast1 \
-  --uniform-bucket-level-access
-
-gcloud storage buckets add-iam-policy-binding gs://vrc-calendar-bot-backup \
-  --member="serviceAccount:calendar-bot-sa@vrc-calendar-bot.iam.gserviceaccount.com" \
-  --role="roles/storage.objectAdmin"
-```
-
-### B-6. Cloud Runへのデプロイ
-
-```bash
-# [ローカルマシンで実行]
-# Artifact Registryリポジトリ作成
-gcloud artifacts repositories create calendar-bot-repo \
-  --repository-format=docker \
-  --location=asia-northeast1
-
-# ビルドとプッシュ
-gcloud builds submit \
-  --tag asia-northeast1-docker.pkg.dev/vrc-calendar-bot/calendar-bot-repo/calendar-bot:latest
-
-# デプロイ
-gcloud run deploy calendar-bot \
-  --image=asia-northeast1-docker.pkg.dev/vrc-calendar-bot/calendar-bot-repo/calendar-bot:latest \
-  --platform=managed \
-  --region=asia-northeast1 \
-  --allow-unauthenticated \
-  --service-account=calendar-bot-sa@vrc-calendar-bot.iam.gserviceaccount.com \
-  --min-instances=0 \
-  --max-instances=1 \
-  --memory=512Mi \
-  --cpu=1 \
-  --timeout=300 \
-  --set-env-vars="GCP_PROJECT_ID=vrc-calendar-bot,GOOGLE_CALENDAR_ID=YOUR_CALENDAR_ID,GCS_BUCKET_NAME=vrc-calendar-bot-backup"
-```
-
-### B-7. 週次通知（Cloud Scheduler + Pub/Sub）
-
-```bash
-# [ローカルマシンで実行]
-# サービスURL取得
-SERVICE_URL=$(gcloud run services describe calendar-bot --region=asia-northeast1 --format='value(status.url)')
-
-# Pub/Subトピック作成
-gcloud pubsub topics create weekly-notification-trigger
-
-# Pushサブスクリプション作成
-gcloud pubsub subscriptions create weekly-notification-sub \
-  --topic=weekly-notification-trigger \
-  --push-endpoint="${SERVICE_URL}/weekly-notification" \
-  --push-auth-service-account=calendar-bot-sa@vrc-calendar-bot.iam.gserviceaccount.com
-
-# Cloud Schedulerジョブ作成（毎週月曜9:00 JST）
-gcloud scheduler jobs create pubsub weekly-notification-job \
-  --schedule="0 9 * * 1" \
-  --time-zone="Asia/Tokyo" \
-  --topic=weekly-notification-trigger \
-  --message-body="weekly notification trigger"
 ```
 
 ---
@@ -877,29 +687,6 @@ gcloud scheduler jobs create pubsub weekly-notification-job \
 3. **BOT PERMISSIONS**: 上記の権限を選択
 4. 生成されたURLをブラウザで開いて招待
 
-### Googleカレンダーの設定
-
-#### 1. カレンダーの共有設定
-
-1. [Googleカレンダー](https://calendar.google.com)を開く
-2. 左サイドバーで対象カレンダーの「⋮」→「設定と共有」
-3. 「特定のユーザーとの共有」セクション
-4. 「ユーザーを追加」でサービスアカウントのメールアドレスを入力:
-   ```
-   calendar-bot-sa@vrc-calendar-bot.iam.gserviceaccount.com
-   ```
-5. 権限: 「変更および共有の管理権限」を選択
-
-#### 2. カレンダーIDの取得
-
-1. カレンダーの設定画面を開く
-2. 「カレンダーの統合」セクションまでスクロール
-3. 「カレンダーID」をコピー
-
-形式例:
-- メインカレンダー: `primary`
-- 追加カレンダー: `abc123xyz@group.calendar.google.com`
-
 ### Gemini APIキーの取得
 
 1. [Google AI Studio](https://aistudio.google.com/)にアクセス
@@ -909,23 +696,18 @@ gcloud scheduler jobs create pubsub weekly-notification-job \
 
 ---
 
-## OAuth 2.0 ユーザー認証の設定（オプション）
+## OAuth 2.0 ユーザー認証の設定
 
-サービスアカウント認証に加え、OAuth 2.0 を使ってユーザー自身のGoogleカレンダーに直接アクセスできます。
-この設定を行うと、サービスアカウントへのカレンダー共有設定が不要になります。
+OAuth 2.0 を使ってユーザー自身のGoogleカレンダーに直接アクセスします。
+サービスアカウントへのカレンダー共有設定は不要です。
 
 ### 前提条件
 
 OAuth 認証では、Google がユーザーのブラウザを Bot の Flask サーバー（`/oauth/callback`）にリダイレクトします。
 そのため、**Flask サーバーに外部から HTTPS でアクセスできる環境**が必要です。
 
-| 環境 | 必要な設定 |
-|------|-----------|
-| OCI VM | Cloudflare Tunnel の設定が必要（[A-2 方法2 参照](#方法2-cloud-scheduler--pubsub--cloudflare-tunnel)） |
-| Cloud Run | デフォルトで HTTPS URL が発行されるため追加設定不要 |
-
-> **OCI VM の場合**: 週次通知を cron（方法1）で運用していても、OAuth を使うには Cloudflare Tunnel が必要です。
-> Tunnel の設定手順は [A-2 方法2](#方法2-cloud-scheduler--pubsub--cloudflare-tunnel) の「Cloudflare Tunnelのセットアップ」を参照してください。
+OAuth を使うには **Cloudflare Tunnel の設定が必要**です（週次通知を cron で運用している場合でも必須）。
+Tunnel の設定手順は [Cloudflare Tunnelのセットアップ](#cloudflare-tunnelのセットアップ) を参照してください。
 
 ### OAuth の認証フロー
 
@@ -1023,18 +805,16 @@ OAuth トークンが失効した場合はサービスアカウントにフォ�
 |------|------|--------|
 | Botがオフラインのまま | トークンが無効 | Discord Developer Portalで新しいトークンを生成 |
 | スラッシュコマンドが表示されない | コマンド未同期 | Botを再起動、または1時間待つ |
-| カレンダー登録エラー | 権限不足 | サービスアカウントのカレンダー共有を確認 |
+| カレンダー登録エラー | 権限不足 | `/カレンダー認証状態` で認証状態を確認、必要に応じて `/カレンダー認証` で再認証 |
 | 「曜日を特定できませんでした」 | NLP解析失敗 | 「毎週水曜14時に〜」など明確に指定 |
-| `audioop-lts`のインストールエラー | Python 3.13未満 | Python 3.13にアップグレードするか、`audioop-lts`を`requirements.txt`から削除（[A-1.5参照](#a-15-必要なパッケージのインストール)） |
+| `audioop-lts`のインストールエラー | Python 3.13未満 | Python 3.13にアップグレードするか、`audioop-lts`を`requirements.txt`から削除（[1.5参照](#15-必要なパッケージのインストール)） |
 | DBがリセットされる | バックアップ未設定 | GCSバケットの権限とバックアップスクリプトを確認 |
 | OAuth認証で「redirect_uri_mismatch」 | リダイレクトURI不一致 | GCPコンソールの承認済みURIと`OAUTH_REDIRECT_URI`が完全一致しているか確認 |
 | OAuth認証で「access_denied」 | 同意画面のテストユーザー未追加 | OAuth同意画面でテストユーザーにGoogleアカウントを追加 |
 | OAuth認証後にカレンダー操作エラー | トークン期限切れ | `/カレンダー認証` で再認証するか、Google側でアクセスを取消していないか確認 |
-| Cloud Runでタイムアウト | コールドスタート | `--min-instances=1`に変更（コスト増） |
 
 ### ログの確認方法
 
-**OCI VM（systemd）**:
 ```bash
 # [OCI VM上で実行]
 # リアルタイムログ
@@ -1044,32 +824,16 @@ sudo journalctl -u vrc-calendar-bot -f
 sudo journalctl -u vrc-calendar-bot -p err --since "1 hour ago"
 ```
 
-**Cloud Run**:
-```bash
-# [ローカルマシンで実行]
-gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=calendar-bot" --limit=50
-```
-
 ### サービスの再起動
 
-**OCI VM**:
 ```bash
 # [OCI VM上で実行]
 sudo systemctl restart vrc-calendar-bot
 ```
 
-**Cloud Run**:
-```bash
-# [ローカルマシンで実行]
-# 新しいリビジョンをデプロイ（再起動と同等）
-gcloud run services update calendar-bot --region=asia-northeast1
-```
-
 ---
 
-## コスト比較
-
-### 方式A: OCI + GCP（推奨）
+## コスト
 
 | サービス | 月額 | 備考 |
 |----------|------|------|
@@ -1080,17 +844,6 @@ gcloud run services update calendar-bot --region=asia-northeast1
 | GCP Secret Manager | $0 | 6シークレットまで無料 |
 | Cloudflare Tunnel | $0 | Freeプラン（OAuth利用時は必須） |
 | **合計** | **$0** | **完全無料** |
-
-### 方式B: Cloud Run
-
-| サービス | 月額 | 備考 |
-|----------|------|------|
-| Cloud Run | ~$0.10 | min-instances=0の場合 |
-| Cloud Storage | ~$0.01 | 5GB未満 |
-| Cloud Scheduler | $0 | 3ジョブまで無料 |
-| Pub/Sub | $0 | 10GB/月まで無料 |
-| Secret Manager | $0 | 6シークレットまで無料 |
-| **合計** | **~$0.20** | **約30円/月** |
 
 ---
 
@@ -1109,16 +862,6 @@ oci compute instance terminate --instance-id <INSTANCE_ID>
 
 ```bash
 # [ローカルマシンで実行]
-# Cloud Runサービス削除
-gcloud run services delete calendar-bot --region=asia-northeast1
-
-# Schedulerジョブ削除
-gcloud scheduler jobs delete weekly-notification-job
-
-# Pub/Sub削除
-gcloud pubsub subscriptions delete weekly-notification-sub
-gcloud pubsub topics delete weekly-notification-trigger
-
 # シークレット削除
 gcloud secrets delete DISCORD_BOT_TOKEN
 gcloud secrets delete GEMINI_API_KEY
