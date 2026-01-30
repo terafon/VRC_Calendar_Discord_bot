@@ -1075,9 +1075,10 @@ gcloud run services update calendar-bot --region=asia-northeast1
 |----------|------|------|
 | OCI VM | $0 | Always Free対象 |
 | GCP Calendar API | $0 | 無料枠内 |
+| GCP Firestore | $0 | 無料枠（1GiB, 50K reads/日）内 |
 | GCP Storage | $0 | 5GB未満は無料 |
 | GCP Secret Manager | $0 | 6シークレットまで無料 |
-| Cloudflare Tunnel | $0 | Freeプラン |
+| Cloudflare Tunnel | $0 | Freeプラン（OAuth利用時は必須） |
 | **合計** | **$0** | **完全無料** |
 
 ### 方式B: Cloud Run
