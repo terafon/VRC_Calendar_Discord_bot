@@ -9,7 +9,7 @@ from typing import Optional, List, Dict, Any, Tuple
 
 from nlp_processor import NLPProcessor
 from calendar_manager import GoogleCalendarManager
-from database_manager import DatabaseManager
+from firestore_manager import FirestoreManager
 from recurrence_calculator import RecurrenceCalculator
 
 RECURRENCE_TYPES = {
@@ -24,7 +24,7 @@ class CalendarBot(commands.Bot):
         self,
         nlp_processor: NLPProcessor,
         calendar_manager: GoogleCalendarManager,
-        db_manager: DatabaseManager,
+        db_manager: FirestoreManager,
         default_credentials_path: str,
         default_calendar_id: str
     ):
