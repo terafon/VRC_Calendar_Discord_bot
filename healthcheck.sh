@@ -205,14 +205,14 @@ fi
 # ==========================================================
 CRONTAB_CONTENT=$(crontab -l 2>/dev/null || echo "")
 
-if echo "$CRONTAB_CONTENT" | grep -q "firestore_backup"; then
+if echo "$CRONTAB_CONTENT" | grep -q "backup\.sh\|firestore_backup"; then
     ok "crontab: バックアップジョブ確認済み"
 else
     ng "crontab: バックアップジョブが未登録" \
        "DEPLOY.md のバックアップ設定を参照して crontab -e で追加してください"
 fi
 
-if echo "$CRONTAB_CONTENT" | grep -q "weekly_notify\|週次通知\|send_weekly"; then
+if echo "$CRONTAB_CONTENT" | grep -q "weekly-notification\|weekly_notify\|send_weekly"; then
     ok "crontab: 週次通知ジョブ確認済み"
 else
     ng "crontab: 週次通知ジョブが未登録" \
