@@ -235,6 +235,32 @@ python migrate_to_firestore.py --db calendar.db --project YOUR_PROJECT_ID
 
 ### ヘルスチェック
 
+ヘルスチェックスクリプトを使って、Bot の全体的な稼働状態を一括確認できます。
+
+```bash
+# [OCI VM上で実行]
+cd /home/ubuntu/VRC_Calendar_Discord_bot
+bash healthcheck.sh
+```
+
+スクリプトは以下の項目を自動チェックします:
+
+| # | チェック内容 |
+|---|------------|
+| 1 | Bot サービス稼働状態（systemd） |
+| 2 | Cloudflare Tunnel 稼働状態（systemd） |
+| 3 | Flask ヘルスエンドポイント（ローカル） |
+| 4 | Flask ヘルスエンドポイント（Tunnel 経由） |
+| 5 | .env 必須変数の存在確認 |
+| 6 | credentials.json の存在確認 |
+| 7 | Firestore 接続テスト |
+| 8 | crontab エントリの確認（バックアップ・通知） |
+| 9 | ディスク使用量 |
+
+各項目は `[OK]` / `[NG]` で表示され、`[NG]` の項目には対処法が併記されます。
+
+#### 個別の手動チェック
+
 ```bash
 # [OCI VM上で実行]
 # ローカルでFlaskの動作確認
