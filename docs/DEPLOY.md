@@ -412,7 +412,41 @@ PORT=8080
 
 ---
 
-#### 1.8 GCPサービスアカウント鍵の配置（credentials.json）
+#### 1.8 GCPプロジェクトの設定（API有効化・Firestore作成）
+
+GCP側で必要なAPIの有効化とFirestoreデータベースの作成を行います。
+
+##### APIの有効化
+
+```bash
+# [ローカルマシンで実行]
+# 使用するプロジェクトを設定
+gcloud config set project YOUR_PROJECT_ID
+
+# 必要なAPIを有効化
+gcloud services enable calendar-json.googleapis.com    # Google Calendar API
+gcloud services enable firestore.googleapis.com        # Cloud Firestore
+gcloud services enable secretmanager.googleapis.com    # Secret Manager
+gcloud services enable storage.googleapis.com          # Cloud Storage
+```
+
+> **GCPコンソールから行う場合**: [APIとサービス > ライブラリ](https://console.cloud.google.com/apis/library) にアクセスし、各APIを検索して「有効にする」をクリックします。
+
+##### Firestoreデータベースの作成
+
+```bash
+# [ローカルマシンで実行]
+# Firestoreデータベースを Native モードで作成
+gcloud firestore databases create --location=asia-northeast1
+```
+
+> **GCPコンソールから行う場合**: [Firestore](https://console.cloud.google.com/firestore) にアクセスし、「データベースを作成」→ モード「**Native**」を選択 → ロケーション「**asia-northeast1（東京）**」を選択 → 「作成」をクリックします。
+>
+> **注意**: モードは必ず「**Native**」を選択してください。「Datastore」モードでは動作しません。データベースの作成後にモードを変更することはできません。
+
+---
+
+#### 1.9 GCPサービスアカウント鍵の配置（credentials.json）
 
 `.env`で指定したパスに、GCPサービスアカウントのJSONファイルを配置する必要があります。
 
@@ -477,7 +511,7 @@ gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
   --role="roles/storage.objectAdmin"
 ```
 
-#### 1.9 動作テスト
+#### 1.10 動作テスト
 
 ```bash
 # [OCI VM上で実行]
@@ -495,7 +529,7 @@ Logged in as VRC Calendar Bot#1234
 
 `Ctrl+C`で停止。
 
-#### 1.10 systemdサービスの設定（常駐化）
+#### 1.11 systemdサービスの設定（常駐化）
 
 ```bash
 # [OCI VM上で実行]
