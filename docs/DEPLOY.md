@@ -945,7 +945,7 @@ cloudflared tunnel run vrc-calendar-bot
 
 ```bash
 # [ローカルマシンで実行]
-curl -s -o /dev/null -w '%{http_code}' https://bot.yourdomain.com/oauth/callback
+curl -s -o /dev/null -w '%{http_code}' -L https://bot.yourdomain.com/oauth/callback
 ```
 
 `500` または `405` が返れば正常です（パラメータなしの GET アクセスのためエラーになりますが、Flask サーバーまでリクエストが到達している証拠です）。
@@ -982,7 +982,7 @@ sudo journalctl -u cloudflared -f
 ```bash
 # [ローカルマシンで実行]
 # OAuthコールバックURLにアクセスできるか確認
-curl -s -o /dev/null -w '%{http_code}' https://bot.yourdomain.com/oauth/callback
+curl -s -o /dev/null -w '%{http_code}' -L https://bot.yourdomain.com/oauth/callback
 ```
 
 `500` または `405` が返れば正常です（パラメータなしの GET アクセスのためエラーになりますが、Flask サーバーまでリクエストが到達している証拠です）。
