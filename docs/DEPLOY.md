@@ -412,7 +412,41 @@ PORT=8080
 
 ---
 
-#### 1.8 GCPサービスアカウント鍵の配置（credentials.json）
+#### 1.8 GCPプロジェクトの設定（API有効化・Firestore作成）
+
+GCP側で必要なAPIの有効化とFirestoreデータベースの作成を行います。
+
+##### APIの有効化
+
+```bash
+# [ローカルマシンで実行]
+# 使用するプロジェクトを設定
+gcloud config set project YOUR_PROJECT_ID
+
+# 必要なAPIを有効化
+gcloud services enable calendar-json.googleapis.com    # Google Calendar API
+gcloud services enable firestore.googleapis.com        # Cloud Firestore
+gcloud services enable secretmanager.googleapis.com    # Secret Manager
+gcloud services enable storage.googleapis.com          # Cloud Storage
+```
+
+> **GCPコンソールから行う場合**: [APIとサービス > ライブラリ](https://console.cloud.google.com/apis/library) にアクセスし、各APIを検索して「有効にする」をクリックします。
+
+##### Firestoreデータベースの作成
+
+```bash
+# [ローカルマシンで実行]
+# Firestoreデータベースを Native モードで作成
+gcloud firestore databases create --location=asia-northeast1
+```
+
+> **GCPコンソールから行う場合**: [Firestore](https://console.cloud.google.com/firestore) にアクセスし、「データベースを作成」→ モード「**Native**」を選択 → ロケーション「**asia-northeast1（東京）**」を選択 → 「作成」をクリックします。
+>
+> **注意**: モードは必ず「**Native**」を選択してください。「Datastore」モードでは動作しません。データベースの作成後にモードを変更することはできません。
+
+---
+
+#### 1.9 GCPサービスアカウント鍵の配置（credentials.json）
 
 `.env`で指定したパスに、GCPサービスアカウントのJSONファイルを配置する必要があります。
 
@@ -477,7 +511,7 @@ gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
   --role="roles/storage.objectAdmin"
 ```
 
-#### 1.9 動作テスト
+#### 1.10 動作テスト
 
 ```bash
 # [OCI VM上で実行]
@@ -495,7 +529,7 @@ Logged in as VRC Calendar Bot#1234
 
 `Ctrl+C`で停止。
 
-#### 1.10 systemdサービスの設定（常駐化）
+#### 1.11 systemdサービスの設定（常駐化）
 
 ```bash
 # [OCI VM上で実行]
@@ -1042,8 +1076,14 @@ OAuth 2.0 を使ってユーザー自身のGoogleカレンダーに直接アク�
    - 「保存して次へ」
 9. **概要**を確認して「ダッシュボードに戻る」
 
-> **注意**: OAuth同意画面が「テスト」モードの場合、テストユーザーとして追加されたGoogleアカウントのみ認証が可能です。
-> 一般公開する場合はGoogleの審査が必要です。
+> **注意: テストモードと一般公開について**
+>
+> OAuth同意画面が「テスト」モードの場合、テストユーザーとして追加されたGoogleアカウントのみがOAuth認証を通過できます。
+>
+> このBotでは、サーバーの管理者（`manage_guild`権限を持つ人）が `/カレンダー認証` を実行して、そのサーバー全体で使うカレンダーを認証する設計です。認証するのはサーバーごとに1人（管理者）だけです。
+>
+> - **少人数での運用（自分＋知人のサーバー）**: テストモードのままで十分です。各サーバーの管理者のGoogleアカウントをテストユーザーに追加してください。
+> - **不特定多数のサーバーで利用する場合**: 各サーバーの管理者が自分のGoogleアカウントで認証するため、一般公開（OAuth verification）が必要です。一般公開にはGoogleの審査が必要で、プライバシーポリシーURL・ホームページURL等の準備と数日〜数週間の審査期間がかかります。
 
 ### O-2. GCPコンソールでOAuthクライアントIDを作成
 
