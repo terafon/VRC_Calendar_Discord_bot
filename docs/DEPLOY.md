@@ -937,10 +937,11 @@ cloudflared tunnel run vrc-calendar-bot
 
 ```bash
 # [ローカルマシンで実行]
-curl -I https://bot.yourdomain.com
+curl -s -o /dev/null -w '%{http_code}' https://bot.yourdomain.com/oauth/callback
 ```
 
-`HTTP/2 200` または Flask のレスポンスが返ってくれば成功です。
+`500` または `405` が返れば正常です（パラメータなしの GET アクセスのためエラーになりますが、Flask サーバーまでリクエストが到達している証拠です）。
+`000` や接続エラーの場合は Tunnel が正しく動作していません。
 
 > 確認後、`Ctrl+C` で手動起動したトンネルを停止します。
 
@@ -973,10 +974,10 @@ sudo journalctl -u cloudflared -f
 ```bash
 # [ローカルマシンで実行]
 # OAuthコールバックURLにアクセスできるか確認
-curl -s -o /dev/null -w "%{http_code}" https://bot.yourdomain.com/oauth/callback
+curl -s -o /dev/null -w '%{http_code}' https://bot.yourdomain.com/oauth/callback
 ```
 
-`405`（Method Not Allowed）が返れば正常です（GET でアクセスしているが、パラメータがないため）。
+`500` または `405` が返れば正常です（パラメータなしの GET アクセスのためエラーになりますが、Flask サーバーまでリクエストが到達している証拠です）。
 `000` や接続エラーの場合は、以下を確認してください:
 
 | 症状 | 確認ポイント |
