@@ -18,6 +18,8 @@
 |-------------|------|
 | [使い方ガイド](docs/USAGE.md) | ユーザー向けのコマンド説明と使用例 |
 | [デプロイガイド](docs/DEPLOY.md) | OCI VM + GCPへのデプロイ手順 |
+| [運用ガイド](docs/OPERATIONS.md) | デプロイ後のメンテナンス・トラブルシューティング |
+| [認証情報・有効期限ガイド](docs/CREDENTIALS.md) | 各サービスの認証情報の有効期限と更新手順 |
 | [仕様書](docs/SPECIFICATION.md) | 技術仕様・アーキテクチャ・Firestore設計 |
 
 ## クイックスタート
