@@ -692,24 +692,10 @@ python firestore_backup.py
 
 #### 3.5 cronで自動バックアップを設定
 
-```bash
-# [OCI VM上で実行]
-# バックアップスクリプトを作成
-nano /home/ubuntu/VRC_Calendar_Discord_bot/backup.sh
-```
-
-```bash
-#!/bin/bash
-source /home/ubuntu/VRC_Calendar_Discord_bot/.venv/bin/activate
-cd /home/ubuntu/VRC_Calendar_Discord_bot
-python firestore_backup.py
-```
+リポジトリに `backup.sh` が含まれています。`git pull` 後、cron を設定するだけで使えます。
 
 ```bash
 # [OCI VM上で実行]
-# 実行権限を付与
-chmod +x /home/ubuntu/VRC_Calendar_Discord_bot/backup.sh
-
 # cronで定期実行（6時間ごと）
 crontab -e
 # 以下を追加
