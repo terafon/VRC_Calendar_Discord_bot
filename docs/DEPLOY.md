@@ -7,10 +7,11 @@
 1. [構成概要](#構成概要)
 2. [OCI Always Free + GCP のセットアップ](#oci-always-free--gcp-のセットアップ)
 3. [共通設定](#共通設定)
-4. [OAuth 2.0 ユーザー認証の設定](#oauth-20-ユーザー認証の設定)
-5. [トラブルシューティング](#トラブルシューティング)
-6. [コスト](#コスト)
-7. [リソースのクリーンアップ](#リソースのクリーンアップ)
+4. [Cloudflare Tunnel のセットアップ](#cloudflare-tunnel-のセットアップ)
+5. [OAuth 2.0 ユーザー認証の設定](#oauth-20-ユーザー認証の設定)
+6. [トラブルシューティング](#トラブルシューティング)
+7. [コスト](#コスト)
+8. [リソースのクリーンアップ](#リソースのクリーンアップ)
 
 ---
 
@@ -582,274 +583,12 @@ crontab -e
 sudo timedatectl set-timezone Asia/Tokyo
 ```
 
-#### Cloudflare Tunnel のセットアップ
-
-##### なぜ Cloudflare Tunnel が必要か
-
-OCI VM上のFlaskサーバー（ポート8080）は、通常ローカルネットワークからしかアクセスできません。
-しかし、以下の機能では**外部からHTTPSでFlaskサーバーにアクセスできる必要**があります:
-
-- **OAuth 2.0 認証（必須）**: ユーザーがGoogleでログインした後、Googleが `https://bot.yourdomain.com/oauth/callback` にリダイレクトします。このURLがHTTPSで外部からアクセス可能でなければ、認証フローが完了しません。
-- **Cloud Scheduler による週次通知（任意）**: GCPからOCI VMにHTTPリクエストを送信して通知をトリガーします（cronを使う場合は不要）。
-
-Cloudflare Tunnel は、OCI VMからCloudflareへ**アウトバウンド接続**を張り、外部からの HTTPS リクエストをそのトンネル経由でVM内部のFlaskサーバーに転送します。VMのファイアウォールでインバウンドポートを開ける必要がなく、SSL証明書もCloudflareが自動管理するため、セキュアかつ無料で利用できます。
-
-```
-ユーザーのブラウザ
-    │
-    │ https://bot.yourdomain.com/oauth/callback
-    ▼
-Cloudflare Edge (SSL終端)
-    │
-    │ Cloudflare Tunnel (暗号化されたアウトバウンド接続)
-    ▼
-OCI VM 内の cloudflared プロセス
-    │
-    │ http://127.0.0.1:8080 (ローカル転送)
-    ▼
-Flask Server (/oauth/callback を処理)
-```
-
-##### CF-1. Cloudflare アカウントの作成
-
-Cloudflare は CDN・DNS・セキュリティサービスを提供する企業です。Free プランで Tunnel 機能を無料で利用できます。
-
-1. [Cloudflare](https://cloudflare.com) にアクセス
-2. 「Sign Up」をクリック
-3. メールアドレスとパスワードを入力してアカウントを作成
-4. メール認証を完了
-
-##### CF-2. ドメインの準備
-
-Cloudflare Tunnel でHTTPSのURLを公開するには、**自分が管理するドメイン**が必要です。
-
-> **ドメインを持っていない場合**:
-> 以下のような無料〜格安のドメインレジストラで取得できます:
-> - [Freenom](https://www.freenom.com) - `.tk`, `.ml` 等の無料ドメイン（可用性に注意）
-> - [Google Domains](https://domains.google) - `.dev` 等（年額 $12〜）
-> - [Cloudflare Registrar](https://www.cloudflare.com/products/registrar/) - 原価販売で最安
-
-##### CF-3. ドメインを Cloudflare に追加
-
-Cloudflareの DNS を使うことで、後のステップで Tunnel とドメインを紐付けられるようになります。
-
-1. Cloudflare ダッシュボードにログイン
-2. 「**Add a site**」（サイトを追加）をクリック
-3. 自分のドメイン名（例: `yourdomain.com`）を入力して「**Add site**」
-4. プランの選択画面で「**Free**」を選択して「**Continue**」
-5. Cloudflare が既存のDNSレコードをスキャンします。内容を確認して「**Continue**」
-6. **ネームサーバーの変更手順**が表示されます:
-   - 表示された Cloudflare のネームサーバー2つ（例: `anna.ns.cloudflare.com`, `bob.ns.cloudflare.com`）をメモ
-   - ドメインを購入したレジストラの管理画面にログイン
-   - ネームサーバーを Cloudflare のものに変更
-   - Cloudflare ダッシュボードに戻り「**Done, check nameservers**」をクリック
-7. ネームサーバーの反映には**数分〜最大48時間**かかります（通常は数分〜数時間）
-8. 反映が完了すると、Cloudflare ダッシュボードでドメインのステータスが「**Active**」になります
-
-> **重要**: ステータスが「Active」になるまで、以降の Tunnel 設定は行えません。
-> Quick Start Guide が表示された場合は、すべてデフォルトのまま進めて問題ありません。
-
-##### CF-4. OCI VM に cloudflared をインストール
-
-`cloudflared` は Cloudflare Tunnel のクライアントソフトウェアです。OCI VM上で動作し、Cloudflare Edge との間にトンネルを確立します。
-
-```bash
-# [OCI VM上で実行]
-
-# AMD VM (VM.Standard.E2.1.Micro) の場合
-curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
-sudo dpkg -i cloudflared.deb
-
-# Arm VM (VM.Standard.A1.Flex) の場合
-# curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb -o cloudflared.deb
-# sudo dpkg -i cloudflared.deb
-
-# インストール確認
-cloudflared --version
-```
-
-##### CF-5. Cloudflare にログイン（VM と Cloudflare アカウントの紐付け）
-
-この手順で、OCI VM 上の `cloudflared` を自分の Cloudflare アカウントに紐付けます。
-
-```bash
-# [OCI VM上で実行]
-cloudflared tunnel login
-```
-
-このコマンドを実行すると、認証用のURLが表示されます:
-
-```
-Please open the following URL and log in to your Cloudflare account:
-https://dash.cloudflare.com/argotunnel?aud=...
-```
-
-**操作手順**:
-1. 表示されたURLを**ローカルPCのブラウザ**にコピー＆ペーストして開く
-   （SSH接続中のVMにはブラウザがないため、URLをコピーしてローカルで開きます）
-2. Cloudflare にログイン
-3. Tunnel に使用するドメインを選択して「**Authorize**」をクリック
-4. ブラウザに「You have successfully logged in」と表示される
-5. VM側のターミナルにも認証成功のメッセージが表示される
-
-> **裏側で起きていること**: 認証が成功すると `~/.cloudflared/cert.pem` というファイルが作成されます。これはCloudflareアカウントとの信頼関係を証明する証明書で、以降の Tunnel 操作に使用されます。
-
-##### CF-6. Tunnel の作成
-
-Tunnel は、VM と Cloudflare Edge を結ぶ「トンネル」の定義です。名前を付けて作成します。
-
-```bash
-# [OCI VM上で実行]
-cloudflared tunnel create vrc-calendar-bot
-```
-
-成功すると以下のような出力が表示されます:
-
-```
-Tunnel credentials written to /home/ubuntu/.cloudflared/<TUNNEL_ID>.json.
-Created tunnel vrc-calendar-bot with id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
-
-**この `<TUNNEL_ID>`（`xxxxxxxx-...` の部分）を控えてください。** 以降の設定で使用します。
-
-```bash
-# Tunnel IDの再確認が必要な場合
-cloudflared tunnel list
-```
-
-> **裏側で起きていること**: Tunnel の認証情報（`<TUNNEL_ID>.json`）が `~/.cloudflared/` に保存されます。このファイルにはトンネル固有の秘密鍵が含まれており、このVMだけがこのトンネルを使用できることを保証します。
-
-##### CF-7. DNS ルーティングの設定
-
-この手順で、`bot.yourdomain.com` へのアクセスを Tunnel 経由で OCI VM に転送するための DNS レコード（CNAME）を作成します。
-
-```bash
-# [OCI VM上で実行]
-# "bot" はサブドメイン名（任意の名前に変更可）
-cloudflared tunnel route dns vrc-calendar-bot bot.yourdomain.com
-```
-
-成功すると以下のような出力が表示されます:
-
-```
-Added CNAME bot.yourdomain.com which will route to this tunnel
-```
-
-> **裏側で起きていること**: Cloudflare の DNS に `bot.yourdomain.com → <TUNNEL_ID>.cfargotunnel.com` の CNAME レコードが自動的に追加されます。これにより、`bot.yourdomain.com` へのリクエストが Cloudflare Edge を経由してこの Tunnel に転送されるようになります。
->
-> Cloudflare ダッシュボード > DNS で確認すると、CNAME レコードが追加されているのが分かります。
-
-##### CF-8. 設定ファイルの作成
-
-`cloudflared` にどのトンネルを使い、どのリクエストをどこに転送するかを指示する設定ファイルを作成します。
-
-```bash
-# [OCI VM上で実行]
-mkdir -p /home/ubuntu/.cloudflared
-nano /home/ubuntu/.cloudflared/config.yml
-```
-
-以下の内容を記述します（`<TUNNEL_ID>` は CF-6 で控えた値に置き換えてください）:
-
-```yaml
-# 使用するTunnelの名前
-tunnel: vrc-calendar-bot
-
-# CF-6 で自動生成されたTunnel認証情報ファイルのパス
-credentials-file: /home/ubuntu/.cloudflared/<TUNNEL_ID>.json
-
-# ingress: 外部リクエストをどのローカルサービスに転送するかのルール
-ingress:
-  # bot.yourdomain.com へのリクエスト → Flask サーバー (ポート8080) に転送
-  - hostname: bot.yourdomain.com
-    service: http://127.0.0.1:8080
-
-  # 上記以外のリクエスト → 404 を返す（必須: catch-all ルール）
-  - service: http_status:404
-```
-
-> **ingress ルールの補足**:
-> - `hostname` に一致するリクエストだけが Flask サーバーに転送されます
-> - 最後の行（`- service: http_status:404`）は **必須** です。これがないと `cloudflared` が起動時にエラーになります
-> - 複数のサブドメインを転送したい場合は、catch-all の前に `hostname` ルールを追加できます
-
-**保存**: `Ctrl+X` → `Y` → `Enter`
-
-##### CF-9. 動作テスト（手動起動）
-
-サービス化する前に、手動でトンネルを起動して正しく動作するか確認します。
-
-```bash
-# [OCI VM上で実行]
-# Flask サーバーが起動していることを確認
-# （systemd でBotが動いている場合はそのままでOK）
-
-# Tunnel を手動起動
-cloudflared tunnel run vrc-calendar-bot
-```
-
-別のターミナル（またはローカルPC）から動作確認:
-
-```bash
-# [ローカルマシンで実行]
-curl -I https://bot.yourdomain.com
-```
-
-`HTTP/2 200` または Flask のレスポンスが返ってくれば成功です。
-
-> 確認後、`Ctrl+C` で手動起動したトンネルを停止します。
-
-##### CF-10. cloudflared のサービス化（常駐化）
-
-VM 再起動時にも自動的にトンネルが起動するよう、systemd サービスとして登録します。
-
-```bash
-# [OCI VM上で実行]
-# systemd サービスとしてインストール
-sudo cloudflared service install
-
-# サービスを有効化して起動
-sudo systemctl enable --now cloudflared
-
-# 状態確認
-sudo systemctl status cloudflared
-```
-
-`Active: active (running)` と表示されれば成功です。
-
-```bash
-# [OCI VM上で実行]
-# ログの確認（問題が起きた場合）
-sudo journalctl -u cloudflared -f
-```
-
-##### CF-11. HTTPS アクセスの最終確認
-
-```bash
-# [ローカルマシンで実行]
-# OAuthコールバックURLにアクセスできるか確認
-curl -s -o /dev/null -w "%{http_code}" https://bot.yourdomain.com/oauth/callback
-```
-
-`405`（Method Not Allowed）が返れば正常です（GET でアクセスしているが、パラメータがないため）。
-`000` や接続エラーの場合は、以下を確認してください:
-
-| 症状 | 確認ポイント |
-|------|-------------|
-| 接続できない | `sudo systemctl status cloudflared` でサービスが動いているか |
-| 502 Bad Gateway | Flask サーバー（ポート8080）が起動しているか |
-| DNS エラー | ドメインの Cloudflare ステータスが「Active」か、CNAME レコードが存在するか |
-
-> **この手順が完了すると**: `https://bot.yourdomain.com` が OCI VM 上の Flask サーバーに転送されるようになります。OAuth 認証のリダイレクトURI（`OAUTH_REDIRECT_URI`）にはこの URL を使用します。
-
----
-
 #### 方法2: Cloud Scheduler + Pub/Sub（週次通知の代替方法）
 
 > **注**: 方法1（cron）で週次通知を運用している場合、この設定は不要です。
-> Cloudflare Tunnel のセットアップは OAuth 認証で既に完了しているため、追加の Tunnel 設定は不要です。
+> Cloudflare Tunnel は OAuth 認証のセットアップで既に完了しているため、追加の Tunnel 設定は不要です。
 
-GCPのCloud Schedulerを使って週次通知をトリガーする方法です。
+GCPのCloud Schedulerを使って週次通知をトリガーする方法です。Cloudflare Tunnel 経由で外部からHTTPSアクセスします。
 
 ```bash
 # [ローカルマシンで実行]
@@ -988,18 +727,274 @@ python firestore_backup.py --restore firestore_backup/20240101_120000.json
 
 ---
 
+## Cloudflare Tunnel のセットアップ
+
+### なぜ Cloudflare Tunnel が必要か
+
+OAuth 2.0 認証では、ユーザーが Google でログインした後、Google がユーザーのブラウザを Bot の Flask サーバー（`/oauth/callback`）に**リダイレクト**します。このとき、Flask サーバーが外部から HTTPS でアクセスできなければ、認証フローが完了しません。
+
+しかし OCI VM 上の Flask サーバー（ポート8080）は通常ローカルからしかアクセスできません。Cloudflare Tunnel はこの問題を解決します。
+
+Cloudflare Tunnel は OCI VM から Cloudflare へ**アウトバウンド接続（VM→外部方向）** を張り、外部からの HTTPS リクエストをそのトンネル経由で VM 内部の Flask サーバーに転送します。VM 側でインバウンドポートを開ける必要がなく、SSL証明書も Cloudflare が自動管理するため、セキュアかつ無料で利用できます。
+
+```
+ユーザーのブラウザ
+    │
+    │ https://bot.yourdomain.com/oauth/callback
+    ▼
+Cloudflare Edge (SSL終端)
+    │
+    │ Cloudflare Tunnel (暗号化されたアウトバウンド接続)
+    ▼
+OCI VM 内の cloudflared プロセス
+    │
+    │ http://127.0.0.1:8080 (ローカル転送)
+    ▼
+Flask Server (/oauth/callback を処理)
+```
+
+> **補足**: 週次通知を Cloud Scheduler で運用する場合も、同じ Tunnel を共用できます（追加設定不要）。
+
+### CF-1. Cloudflare アカウントの作成
+
+Cloudflare は CDN・DNS・セキュリティサービスを提供する企業です。Free プランで Tunnel 機能を無料で利用できます。
+
+1. [Cloudflare](https://cloudflare.com) にアクセス
+2. 「Sign Up」をクリック
+3. メールアドレスとパスワードを入力してアカウントを作成
+4. メール認証を完了
+
+### CF-2. ドメインの準備
+
+Cloudflare Tunnel で HTTPS の URL を公開するには、**自分が管理するドメイン**が必要です。
+
+> **ドメインを持っていない場合**:
+> 以下のような無料〜格安のドメインレジストラで取得できます:
+> - [Freenom](https://www.freenom.com) - `.tk`, `.ml` 等の無料ドメイン（可用性に注意）
+> - [Google Domains](https://domains.google) - `.dev` 等（年額 $12〜）
+> - [Cloudflare Registrar](https://www.cloudflare.com/products/registrar/) - 原価販売で最安
+
+### CF-3. ドメインを Cloudflare に追加
+
+Cloudflare の DNS を使うことで、後のステップで Tunnel とドメインを紐付けられるようになります。
+
+1. Cloudflare ダッシュボードにログイン
+2. 「**Add a site**」（サイトを追加）をクリック
+3. 自分のドメイン名（例: `yourdomain.com`）を入力して「**Add site**」
+4. プランの選択画面で「**Free**」を選択して「**Continue**」
+5. Cloudflare が既存の DNS レコードをスキャンします。内容を確認して「**Continue**」
+6. **ネームサーバーの変更手順**が表示されます:
+   - 表示された Cloudflare のネームサーバー2つ（例: `anna.ns.cloudflare.com`, `bob.ns.cloudflare.com`）をメモ
+   - ドメインを購入したレジストラの管理画面にログイン
+   - ネームサーバーを Cloudflare のものに変更
+   - Cloudflare ダッシュボードに戻り「**Done, check nameservers**」をクリック
+7. ネームサーバーの反映には**数分〜最大48時間**かかります（通常は数分〜数時間）
+8. 反映が完了すると、Cloudflare ダッシュボードでドメインのステータスが「**Active**」になります
+
+> **重要**: ステータスが「Active」になるまで、以降の Tunnel 設定は行えません。
+> Quick Start Guide が表示された場合は、すべてデフォルトのまま進めて問題ありません。
+
+### CF-4. OCI VM に cloudflared をインストール
+
+`cloudflared` は Cloudflare Tunnel のクライアントソフトウェアです。OCI VM 上で動作し、Cloudflare Edge との間にトンネルを確立します。
+
+```bash
+# [OCI VM上で実行]
+
+# AMD VM (VM.Standard.E2.1.Micro) の場合
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+sudo dpkg -i cloudflared.deb
+
+# Arm VM (VM.Standard.A1.Flex) の場合
+# curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb -o cloudflared.deb
+# sudo dpkg -i cloudflared.deb
+
+# インストール確認
+cloudflared --version
+```
+
+### CF-5. Cloudflare にログイン（VM と Cloudflare アカウントの紐付け）
+
+この手順で、OCI VM 上の `cloudflared` を自分の Cloudflare アカウントに紐付けます。
+
+```bash
+# [OCI VM上で実行]
+cloudflared tunnel login
+```
+
+このコマンドを実行すると、認証用の URL が表示されます:
+
+```
+Please open the following URL and log in to your Cloudflare account:
+https://dash.cloudflare.com/argotunnel?aud=...
+```
+
+**操作手順**:
+1. 表示された URL を**ローカル PC のブラウザ**にコピー＆ペーストして開く
+   （SSH 接続中の VM にはブラウザがないため、URL をコピーしてローカルで開きます）
+2. Cloudflare にログイン
+3. Tunnel に使用するドメインを選択して「**Authorize**」をクリック
+4. ブラウザに「You have successfully logged in」と表示される
+5. VM 側のターミナルにも認証成功のメッセージが表示される
+
+> **裏側で起きていること**: 認証が成功すると `~/.cloudflared/cert.pem` というファイルが作成されます。これは Cloudflare アカウントとの信頼関係を証明する証明書で、以降の Tunnel 操作に使用されます。
+
+### CF-6. Tunnel の作成
+
+Tunnel は、VM と Cloudflare Edge を結ぶ「トンネル」の定義です。名前を付けて作成します。
+
+```bash
+# [OCI VM上で実行]
+cloudflared tunnel create vrc-calendar-bot
+```
+
+成功すると以下のような出力が表示されます:
+
+```
+Tunnel credentials written to /home/ubuntu/.cloudflared/<TUNNEL_ID>.json.
+Created tunnel vrc-calendar-bot with id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
+
+**この `<TUNNEL_ID>`（`xxxxxxxx-...` の部分）を控えてください。** 以降の設定で使用します。
+
+```bash
+# Tunnel IDの再確認が必要な場合
+cloudflared tunnel list
+```
+
+> **裏側で起きていること**: Tunnel の認証情報（`<TUNNEL_ID>.json`）が `~/.cloudflared/` に保存されます。このファイルにはトンネル固有の秘密鍵が含まれており、この VM だけがこのトンネルを使用できることを保証します。
+
+### CF-7. DNS ルーティングの設定
+
+この手順で、`bot.yourdomain.com` へのアクセスを Tunnel 経由で OCI VM に転送するための DNS レコード（CNAME）を作成します。
+
+```bash
+# [OCI VM上で実行]
+# "bot" はサブドメイン名（任意の名前に変更可）
+cloudflared tunnel route dns vrc-calendar-bot bot.yourdomain.com
+```
+
+成功すると以下のような出力が表示されます:
+
+```
+Added CNAME bot.yourdomain.com which will route to this tunnel
+```
+
+> **裏側で起きていること**: Cloudflare の DNS に `bot.yourdomain.com → <TUNNEL_ID>.cfargotunnel.com` の CNAME レコードが自動的に追加されます。これにより、`bot.yourdomain.com` へのリクエストが Cloudflare Edge を経由してこの Tunnel に転送されるようになります。
+>
+> Cloudflare ダッシュボード > DNS で確認すると、CNAME レコードが追加されているのが分かります。
+
+### CF-8. 設定ファイルの作成
+
+`cloudflared` にどのトンネルを使い、どのリクエストをどこに転送するかを指示する設定ファイルを作成します。
+
+```bash
+# [OCI VM上で実行]
+mkdir -p /home/ubuntu/.cloudflared
+nano /home/ubuntu/.cloudflared/config.yml
+```
+
+以下の内容を記述します（`<TUNNEL_ID>` は CF-6 で控えた値に置き換えてください）:
+
+```yaml
+# 使用するTunnelの名前
+tunnel: vrc-calendar-bot
+
+# CF-6 で自動生成されたTunnel認証情報ファイルのパス
+credentials-file: /home/ubuntu/.cloudflared/<TUNNEL_ID>.json
+
+# ingress: 外部リクエストをどのローカルサービスに転送するかのルール
+ingress:
+  # bot.yourdomain.com へのリクエスト → Flask サーバー (ポート8080) に転送
+  - hostname: bot.yourdomain.com
+    service: http://127.0.0.1:8080
+
+  # 上記以外のリクエスト → 404 を返す（必須: catch-all ルール）
+  - service: http_status:404
+```
+
+> **ingress ルールの補足**:
+> - `hostname` に一致するリクエストだけが Flask サーバーに転送されます
+> - 最後の行（`- service: http_status:404`）は **必須** です。これがないと `cloudflared` が起動時にエラーになります
+> - 複数のサブドメインを転送したい場合は、catch-all の前に `hostname` ルールを追加できます
+
+**保存**: `Ctrl+X` → `Y` → `Enter`
+
+### CF-9. 動作テスト（手動起動）
+
+サービス化する前に、手動でトンネルを起動して正しく動作するか確認します。
+
+```bash
+# [OCI VM上で実行]
+# Flask サーバーが起動していることを確認
+# （systemd でBotが動いている場合はそのままでOK）
+
+# Tunnel を手動起動
+cloudflared tunnel run vrc-calendar-bot
+```
+
+別のターミナル（またはローカル PC）から動作確認:
+
+```bash
+# [ローカルマシンで実行]
+curl -I https://bot.yourdomain.com
+```
+
+`HTTP/2 200` または Flask のレスポンスが返ってくれば成功です。
+
+> 確認後、`Ctrl+C` で手動起動したトンネルを停止します。
+
+### CF-10. cloudflared のサービス化（常駐化）
+
+VM 再起動時にも自動的にトンネルが起動するよう、systemd サービスとして登録します。
+
+```bash
+# [OCI VM上で実行]
+# systemd サービスとしてインストール
+sudo cloudflared service install
+
+# サービスを有効化して起動
+sudo systemctl enable --now cloudflared
+
+# 状態確認
+sudo systemctl status cloudflared
+```
+
+`Active: active (running)` と表示されれば成功です。
+
+```bash
+# [OCI VM上で実行]
+# ログの確認（問題が起きた場合）
+sudo journalctl -u cloudflared -f
+```
+
+### CF-11. HTTPS アクセスの最終確認
+
+```bash
+# [ローカルマシンで実行]
+# OAuthコールバックURLにアクセスできるか確認
+curl -s -o /dev/null -w "%{http_code}" https://bot.yourdomain.com/oauth/callback
+```
+
+`405`（Method Not Allowed）が返れば正常です（GET でアクセスしているが、パラメータがないため）。
+`000` や接続エラーの場合は、以下を確認してください:
+
+| 症状 | 確認ポイント |
+|------|-------------|
+| 接続できない | `sudo systemctl status cloudflared` でサービスが動いているか |
+| 502 Bad Gateway | Flask サーバー（ポート8080）が起動しているか |
+| DNS エラー | ドメインの Cloudflare ステータスが「Active」か、CNAME レコードが存在するか |
+
+> **この手順が完了すると**: `https://bot.yourdomain.com` が OCI VM 上の Flask サーバーに転送されるようになります。OAuth 認証のリダイレクトURI（`OAUTH_REDIRECT_URI`）にはこの URL を使用します。
+
+---
+
 ## OAuth 2.0 ユーザー認証の設定
 
 OAuth 2.0 を使ってユーザー自身のGoogleカレンダーに直接アクセスします。
 サービスアカウントへのカレンダー共有設定は不要です。
 
-### 前提条件
-
-OAuth 認証では、Google がユーザーのブラウザを Bot の Flask サーバー（`/oauth/callback`）にリダイレクトします。
-そのため、**Flask サーバーに外部から HTTPS でアクセスできる環境**が必要です。
-
-OAuth を使うには **Cloudflare Tunnel の設定が必要**です（週次通知を cron で運用している場合でも必須）。
-Tunnel の設定手順は [Cloudflare Tunnel のセットアップ](#cloudflare-tunnel-のセットアップ) を参照してください。
+> **前提**: この手順を始める前に、[Cloudflare Tunnel のセットアップ](#cloudflare-tunnel-のセットアップ) が完了している必要があります。
 
 ### OAuth の認証フロー
 
