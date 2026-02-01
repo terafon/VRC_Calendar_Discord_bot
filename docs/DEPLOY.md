@@ -888,10 +888,18 @@ Added CNAME bot.yourdomain.com which will route to this tunnel
 
 `cloudflared` にどのトンネルを使い、どのリクエストをどこに転送するかを指示する設定ファイルを作成します。
 
+`sudo cloudflared service install` は `/etc/cloudflared/config.yml` を参照するため、設定ファイルは `/etc/cloudflared/` に配置します。
+
 ```bash
 # [OCI VM上で実行]
-mkdir -p /home/ubuntu/.cloudflared
-nano /home/ubuntu/.cloudflared/config.yml
+# 設定ディレクトリを作成
+sudo mkdir -p /etc/cloudflared
+
+# CF-6 で生成された認証情報ファイルをコピー
+sudo cp /home/ubuntu/.cloudflared/*.json /etc/cloudflared/
+
+# 設定ファイルを作成
+sudo nano /etc/cloudflared/config.yml
 ```
 
 以下の内容を記述します（`<TUNNEL_ID>` は CF-6 で控えた値に置き換えてください）:
@@ -901,7 +909,7 @@ nano /home/ubuntu/.cloudflared/config.yml
 tunnel: vrc-calendar-bot
 
 # CF-6 で自動生成されたTunnel認証情報ファイルのパス
-credentials-file: /home/ubuntu/.cloudflared/<TUNNEL_ID>.json
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
 
 # ingress: 外部リクエストをどのローカルサービスに転送するかのルール
 ingress:
@@ -937,10 +945,11 @@ cloudflared tunnel run vrc-calendar-bot
 
 ```bash
 # [ローカルマシンで実行]
-curl -I https://bot.yourdomain.com
+curl -s -o /dev/null -w '%{http_code}' -L https://bot.yourdomain.com/oauth/callback
 ```
 
-`HTTP/2 200` または Flask のレスポンスが返ってくれば成功です。
+`500` または `405` が返れば正常です（パラメータなしの GET アクセスのためエラーになりますが、Flask サーバーまでリクエストが到達している証拠です）。
+`000` や接続エラーの場合は Tunnel が正しく動作していません。
 
 > 確認後、`Ctrl+C` で手動起動したトンネルを停止します。
 
@@ -973,10 +982,10 @@ sudo journalctl -u cloudflared -f
 ```bash
 # [ローカルマシンで実行]
 # OAuthコールバックURLにアクセスできるか確認
-curl -s -o /dev/null -w "%{http_code}" https://bot.yourdomain.com/oauth/callback
+curl -s -o /dev/null -w '%{http_code}' -L https://bot.yourdomain.com/oauth/callback
 ```
 
-`405`（Method Not Allowed）が返れば正常です（GET でアクセスしているが、パラメータがないため）。
+`500` または `405` が返れば正常です（パラメータなしの GET アクセスのためエラーになりますが、Flask サーバーまでリクエストが到達している証拠です）。
 `000` や接続エラーの場合は、以下を確認してください:
 
 | 症状 | 確認ポイント |
