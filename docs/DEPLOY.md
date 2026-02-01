@@ -888,10 +888,18 @@ Added CNAME bot.yourdomain.com which will route to this tunnel
 
 `cloudflared` にどのトンネルを使い、どのリクエストをどこに転送するかを指示する設定ファイルを作成します。
 
+`sudo cloudflared service install` は `/etc/cloudflared/config.yml` を参照するため、設定ファイルは `/etc/cloudflared/` に配置します。
+
 ```bash
 # [OCI VM上で実行]
-mkdir -p /home/ubuntu/.cloudflared
-nano /home/ubuntu/.cloudflared/config.yml
+# 設定ディレクトリを作成
+sudo mkdir -p /etc/cloudflared
+
+# CF-6 で生成された認証情報ファイルをコピー
+sudo cp /home/ubuntu/.cloudflared/*.json /etc/cloudflared/
+
+# 設定ファイルを作成
+sudo nano /etc/cloudflared/config.yml
 ```
 
 以下の内容を記述します（`<TUNNEL_ID>` は CF-6 で控えた値に置き換えてください）:
@@ -901,7 +909,7 @@ nano /home/ubuntu/.cloudflared/config.yml
 tunnel: vrc-calendar-bot
 
 # CF-6 で自動生成されたTunnel認証情報ファイルのパス
-credentials-file: /home/ubuntu/.cloudflared/<TUNNEL_ID>.json
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
 
 # ingress: 外部リクエストをどのローカルサービスに転送するかのルール
 ingress:
