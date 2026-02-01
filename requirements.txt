@@ -7,9 +7,7 @@ google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 google-cloud-firestore==2.19.0
 google-cloud-storage==2.14.0
-google-cloud-pubsub==2.19.0
 google-cloud-secret-manager==2.20.0
 flask==3.0.0
-gunicorn==21.2.0
 python-dotenv==1.0.0
 requests

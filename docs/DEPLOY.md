@@ -9,7 +9,7 @@
 3. [共通設定](#共通設定)
 4. [Cloudflare Tunnel のセットアップ](#cloudflare-tunnel-のセットアップ)
 5. [OAuth 2.0 ユーザー認証の設定](#oauth-20-ユーザー認証の設定)
-6. [トラブルシューティング](#トラブルシューティング)
+6. [デプロイ後の運用](#デプロイ後の運用)
 7. [コスト](#コスト)
 8. [リソースのクリーンアップ](#リソースのクリーンアップ)
 
@@ -500,6 +500,11 @@ nano /home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
 
 ```bash
 # [ローカルマシンで実行]
+# Firestoreへのアクセス権（必須）
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:calendar-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/datastore.user"
+
 # Secret Managerへのアクセス権（GCP Secret Managerを使う場合）
 gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
   --member="serviceAccount:calendar-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
@@ -525,6 +530,13 @@ python main.py
 ログに以下が表示されれば成功:
 ```
 Logged in as VRC Calendar Bot#1234
+```
+
+別のターミナルからヘルスチェックエンドポイントも確認できます:
+```bash
+# [OCI VM上で実行（別ターミナル）]
+curl http://localhost:8080/health
+# → "OK" と返れば Flask サーバーも正常に動作しています
 ```
 
 `Ctrl+C`で停止。
@@ -1133,39 +1145,10 @@ OAuth トークンが失効した場合はサービスアカウントにフォ�
 
 ---
 
-## トラブルシューティング
+## デプロイ後の運用
 
-### よくある問題と解決策
-
-| 症状 | 原因 | 解決策 |
-|------|------|--------|
-| Botがオフラインのまま | トークンが無効 | Discord Developer Portalで新しいトークンを生成 |
-| スラッシュコマンドが表示されない | コマンド未同期 | Botを再起動、または1時間待つ |
-| カレンダー登録エラー | 権限不足 | `/カレンダー認証状態` で認証状態を確認、必要に応じて `/カレンダー認証` で再認証 |
-| 「曜日を特定できませんでした」 | NLP解析失敗 | 「毎週水曜14時に〜」など明確に指定 |
-| `audioop-lts`のインストールエラー | Python 3.13未満 | Python 3.13にアップグレードするか、`audioop-lts`を`requirements.txt`から削除（[1.5参照](#15-必要なパッケージのインストール)） |
-| バックアップが失敗する | GCS権限不足 | サービスアカウントに`roles/storage.objectAdmin`を付与、`GCS_BUCKET_NAME`が正しいか確認 |
-| OAuth認証で「redirect_uri_mismatch」 | リダイレクトURI不一致 | GCPコンソールの承認済みURIと`OAUTH_REDIRECT_URI`が完全一致しているか確認 |
-| OAuth認証で「access_denied」 | 同意画面のテストユーザー未追加 | OAuth同意画面でテストユーザーにGoogleアカウントを追加 |
-| OAuth認証後にカレンダー操作エラー | トークン期限切れ | `/カレンダー認証` で再認証するか、Google側でアクセスを取消していないか確認 |
-
-### ログの確認方法
-
-```bash
-# [OCI VM上で実行]
-# リアルタイムログ
-sudo journalctl -u vrc-calendar-bot -f
-
-# 最近のエラー
-sudo journalctl -u vrc-calendar-bot -p err --since "1 hour ago"
-```
-
-### サービスの再起動
-
-```bash
-# [OCI VM上で実行]
-sudo systemctl restart vrc-calendar-bot
-```
+デプロイ完了後のメンテナンス（コード更新の反映、サービス管理、トラブルシューティングなど）については [運用ガイド](OPERATIONS.md) を参照してください。
+各サービスの認証情報の有効期限と更新手順については [認証情報・有効期限ガイド](CREDENTIALS.md) を参照してください。
 
 ---
 
@@ -1179,6 +1162,7 @@ sudo systemctl restart vrc-calendar-bot
 | GCP Storage | $0 | 5GB未満は無料 |
 | GCP Secret Manager | $0 | 6シークレットまで無料 |
 | Cloudflare Tunnel | $0 | Freeプラン（OAuth利用時は必須） |
+| ドメイン | $0 | 永久無料ドメインを使用（OAuth用） |
 | **合計** | **$0** | **完全無料** |
 
 ---
