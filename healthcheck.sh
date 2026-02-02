@@ -70,12 +70,25 @@ if [ -f .env ]; then
     fi
 fi
 
-HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:${PORT}/health" 2>/dev/null || echo "000")
+HEALTH_RESPONSE=$(curl -s --max-time 5 -w '\n%{http_code}' "http://localhost:${PORT}/health" 2>/dev/null || echo -e "\n000")
+HEALTH_BODY=$(echo "$HEALTH_RESPONSE" | sed '$d')
+HTTP_CODE=$(echo "$HEALTH_RESPONSE" | tail -1)
+
 if [ "$HTTP_CODE" = "200" ]; then
     ok "Flask ヘルスエンドポイント（ローカル）: 200 OK"
 else
     ng "Flask ヘルスエンドポイント（ローカル）: HTTP ${HTTP_CODE}" \
        "Bot サービスが起動しているか確認: sudo systemctl status vrc-calendar-bot"
+fi
+
+# ==========================================================
+# 3-2. Discord Bot 接続状態
+# ==========================================================
+if echo "$HEALTH_BODY" | grep -qE '"discord_bot":\s*true'; then
+    ok "Discord Bot: 接続済み"
+else
+    ng "Discord Bot: 未接続" \
+       "DISCORD_BOT_TOKEN が正しいか確認。ログ: sudo journalctl -u vrc-calendar-bot --since '10 min ago'"
 fi
 
 # ==========================================================

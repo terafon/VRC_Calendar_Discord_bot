@@ -75,7 +75,11 @@ bot_ready = threading.Event()
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return 'OK', 200
+    status = {
+        'status': 'ok',
+        'discord_bot': bot.is_ready() if bot else False,
+    }
+    return status, 200
 
 @app.route('/oauth/callback', methods=['GET'])
 def oauth_callback():
