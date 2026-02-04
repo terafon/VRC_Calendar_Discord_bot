@@ -399,78 +399,6 @@ class FirestoreManager:
         existing_names = {t["name"] for t in all_tags}
         return [t for t in tags if t not in existing_names]
 
-    # ---- カレンダーアカウント ----
-
-    def add_calendar_account(
-        self, guild_id: str, name: str, calendar_id: str,
-        credentials_path: Optional[str] = None,
-    ) -> int:
-        """カレンダーアカウントを追加"""
-        account_id = self._next_id("calendar_accounts")
-        data = {
-            "id": account_id,
-            "guild_id": guild_id,
-            "name": name,
-            "calendar_id": calendar_id,
-            "credentials_path": credentials_path,
-        }
-        self._guild_ref(guild_id).collection("calendar_accounts").document(str(account_id)).set(data)
-        return account_id
-
-    def list_calendar_accounts(self, guild_id: str) -> List[dict]:
-        """カレンダーアカウント一覧"""
-        docs = (
-            self._guild_ref(guild_id)
-            .collection("calendar_accounts")
-            .order_by("id")
-            .get()
-        )
-        return [doc.to_dict() for doc in docs]
-
-    def get_calendar_account(self, guild_id: str, account_id: int) -> Optional[dict]:
-        """カレンダーアカウントを取得"""
-        doc = (
-            self._guild_ref(guild_id)
-            .collection("calendar_accounts")
-            .document(str(account_id))
-            .get()
-        )
-        return doc.to_dict() if doc.exists else None
-
-    def delete_calendar_account(self, guild_id: str, account_id: int):
-        """カレンダーアカウントを削除"""
-        self._guild_ref(guild_id).collection("calendar_accounts").document(str(account_id)).delete()
-
-    def set_guild_calendar_account(self, guild_id: str, account_id: Optional[int]):
-        """サーバーで使用するカレンダーアカウントを設定"""
-        if account_id is not None:
-            account = self.get_calendar_account(guild_id, account_id)
-            if not account:
-                raise ValueError("指定されたカレンダーアカウントは存在しません。")
-
-        self._guild_ref(guild_id).collection("guild_settings").document("config").set({
-            "guild_id": guild_id,
-            "calendar_account_id": account_id,
-        })
-
-    def get_guild_calendar_account(self, guild_id: str) -> Optional[dict]:
-        """サーバーで使用中のカレンダーアカウントを取得"""
-        config_doc = (
-            self._guild_ref(guild_id)
-            .collection("guild_settings")
-            .document("config")
-            .get()
-        )
-        if not config_doc.exists:
-            return None
-
-        config = config_doc.to_dict()
-        account_id = config.get("calendar_account_id")
-        if account_id is None:
-            return None
-
-        return self.get_calendar_account(guild_id, account_id)
-
     # ---- OAuth トークン管理 ----
 
     def save_oauth_tokens(
@@ -503,6 +431,12 @@ class FirestoreManager:
         self._guild_ref(guild_id).collection("oauth_tokens").document("google").update({
             "access_token": access_token,
             "token_expiry": token_expiry,
+        })
+
+    def update_oauth_calendar_id(self, guild_id: str, calendar_id: str):
+        """OAuth のカレンダーIDを更新"""
+        self._guild_ref(guild_id).collection("oauth_tokens").document("google").update({
+            "calendar_id": calendar_id,
         })
 
     def delete_oauth_tokens(self, guild_id: str):

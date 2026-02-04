@@ -1,4 +1,3 @@
-from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials as OAuthCredentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -8,22 +7,8 @@ from typing import List, Optional, Dict, Any, Callable
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 class GoogleCalendarManager:
-    def __init__(self, credentials_path: str, calendar_id: str):
-        """
-        credentials_path: サービスアカウントJSONファイルパス
-        calendar_id: 対象のカレンダーID（primary or カスタム）
-        """
-        self.credentials = service_account.Credentials.from_service_account_file(
-            credentials_path,
-            scopes=SCOPES
-        )
-        self.service = build('calendar', 'v3', credentials=self.credentials)
-        self.calendar_id = calendar_id
-        self._on_token_refresh: Optional[Callable] = None
-
-    @classmethod
-    def from_oauth_tokens(
-        cls,
+    def __init__(
+        self,
         access_token: str,
         refresh_token: str,
         token_expiry: Optional[str],
@@ -31,7 +16,7 @@ class GoogleCalendarManager:
         client_secret: str,
         calendar_id: str,
         on_token_refresh: Optional[Callable] = None,
-    ) -> "GoogleCalendarManager":
+    ):
         """OAuth トークンから GoogleCalendarManager を構築する"""
         expiry = None
         if token_expiry:
@@ -53,12 +38,10 @@ class GoogleCalendarManager:
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
 
-        instance = cls.__new__(cls)
-        instance.credentials = creds
-        instance.service = build('calendar', 'v3', credentials=creds)
-        instance.calendar_id = calendar_id
-        instance._on_token_refresh = on_token_refresh
-        return instance
+        self.credentials = creds
+        self.service = build('calendar', 'v3', credentials=creds)
+        self.calendar_id = calendar_id
+        self._on_token_refresh = on_token_refresh
 
     def create_events(
         self,

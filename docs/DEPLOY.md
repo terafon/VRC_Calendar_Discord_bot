@@ -274,43 +274,7 @@ gcloud projects create vrc-calendar-bot --name="VRC Calendar Bot"
 
 ---
 
-###### 3. GOOGLE_CALENDAR_ID（GoogleカレンダーID）【オプション】
-
-> **サーバーごとに異なるカレンダーを使う場合**: Discord上で`/カレンダー追加`と`/カレンダー使用`コマンドで設定できます。この環境変数はデフォルト値として使われます。
-
-**取得場所**: [Googleカレンダー](https://calendar.google.com/)
-
-**手順**:
-1. Googleカレンダーを開く
-2. 左サイドバーで使用するカレンダーの「⋮」（3点メニュー）をクリック
-3. 「設定と共有」をクリック
-4. 下にスクロールして「カレンダーの統合」セクションを見つける
-5. 「カレンダーID」をコピー
-
-```
-例（メインカレンダー）: primary
-例（追加カレンダー）: abc123xyz@group.calendar.google.com
-```
-
----
-
-###### 4. GOOGLE_APPLICATION_CREDENTIALS（サービスアカウントJSONのパス）
-
-これはファイルのパスを指定します。実際のJSONファイルは別途配置する必要があります（次のセクションで説明）。
-
-**OCI VMの場合**:
-```
-/home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
-```
-
-**ローカル開発の場合**:
-```
-./credentials.json
-```
-
----
-
-###### 5. GCS_BUCKET_NAME（Cloud Storageバケット名）
+###### 3. GCS_BUCKET_NAME（Cloud Storageバケット名）
 
 Firestoreデータの自動バックアップに使用するGCSバケットです。
 
@@ -338,7 +302,7 @@ gcloud storage buckets create gs://your-bucket-name \
 
 ---
 
-###### 6. GEMINI_API_KEY（Gemini APIキー）
+###### 4. GEMINI_API_KEY（Gemini APIキー）
 
 **取得場所**: [Google AI Studio](https://aistudio.google.com/)
 
@@ -355,7 +319,7 @@ gcloud storage buckets create gs://your-bucket-name \
 
 ---
 
-###### 7. GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET / OAUTH_REDIRECT_URI（OAuth認証用）
+###### 5. GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET / OAUTH_REDIRECT_URI（OAuth認証用）
 
 OAuth 2.0 ユーザー認証で使用する値です。取得手順は [OAuth 2.0 ユーザー認証の設定](#oauth-20-ユーザー認証の設定) を参照してください。
 
@@ -365,7 +329,7 @@ OAuth 2.0 ユーザー認証で使用する値です。取得手順は [OAuth 2.
 
 ---
 
-###### 8. PORT（サーバーポート）
+###### 6. PORT（サーバーポート）
 
 Flask/HTTPサーバーが使用するポート番号です。通常は変更不要。
 
@@ -383,10 +347,6 @@ DISCORD_BOT_TOKEN=MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.ABcDeF.abcdefghijklmnopqrstuvwxyz12
 
 # Google Cloud
 GCP_PROJECT_ID=vrc-calendar-bot-12345
-GOOGLE_APPLICATION_CREDENTIALS=/home/ubuntu/VRC_Calendar_Discord_bot/credentials.json
-
-# Googleカレンダー（オプション: サーバーごとに /カレンダー追加 と /カレンダー使用 で上書き可能）
-GOOGLE_CALENDAR_ID=abc123xyz@group.calendar.google.com
 
 # Cloud Storage（Firestoreバックアップ用）
 GCS_BUCKET_NAME=vrc-calendar-bot-backup
@@ -448,7 +408,7 @@ gcloud firestore databases create --location=asia-northeast1
 
 #### 1.9 GCPサービスアカウント鍵の配置（credentials.json）
 
-`.env`で指定したパスに、GCPサービスアカウントのJSONファイルを配置する必要があります。
+GCP の Firestore、Secret Manager、Cloud Storage を利用するため、サービスアカウントの JSON ファイルが必要です。`GOOGLE_APPLICATION_CREDENTIALS` 環境変数でパスを指定してください。
 
 ##### サービスアカウントJSONの取得方法
 
@@ -1117,17 +1077,13 @@ OAUTH_REDIRECT_URI=https://bot.yourdomain.com/oauth/callback
 | `/カレンダー認証` | OAuth認証URLを取得（ephemeral） | manage_guild |
 | `/カレンダー認証解除` | OAuth認証を解除 | manage_guild |
 | `/カレンダー認証状態` | 認証方式・状態を確認 | manage_guild |
+| `/カレンダー設定` | 使用するカレンダーIDを変更 | manage_guild |
 
-### O-5. 認証の優先順位
+### O-5. カレンダーの認証方式
 
-Bot は以下の優先順位でカレンダーにアクセスします:
+Bot は **OAuth 2.0 認証** でカレンダーにアクセスします。各サーバーの管理者が `/カレンダー認証` を実行し、Google アカウントでカレンダーへのアクセスを許可する必要があります。
 
-1. **OAuth トークン**（`/カレンダー認証` で設定）
-2. **サービスアカウント**（`/カレンダー使用` で設定）
-3. **デフォルト**（環境変数のサービスアカウント）
-
-OAuth が設定されている場合、サービスアカウントよりも優先されます。
-OAuth トークンが失効した場合はサービスアカウントにフォールバックします。
+認証後、`/カレンダー設定` でカレンダーIDを変更できます（デフォルトは `primary`）。
 
 ---
 

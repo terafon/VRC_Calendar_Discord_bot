@@ -121,7 +121,6 @@ fi
 REQUIRED_VARS=(
     DISCORD_BOT_TOKEN
     GCP_PROJECT_ID
-    GOOGLE_APPLICATION_CREDENTIALS
     GCS_BUCKET_NAME
     GEMINI_API_KEY
     GOOGLE_OAUTH_CLIENT_ID
@@ -150,25 +149,7 @@ else
 fi
 
 # ==========================================================
-# 6. credentials.json の存在確認
-# ==========================================================
-CRED_PATH="credentials.json"
-if [ -f .env ]; then
-    ENV_CRED=$(grep -E '^GOOGLE_APPLICATION_CREDENTIALS=' .env | cut -d'=' -f2 | tr -d '[:space:]')
-    if [ -n "$ENV_CRED" ]; then
-        CRED_PATH="$ENV_CRED"
-    fi
-fi
-
-if [ -f "$CRED_PATH" ]; then
-    ok "credentials.json: 存在確認済み（${CRED_PATH}）"
-else
-    ng "credentials.json: ファイルが見つかりません（${CRED_PATH}）" \
-       "GCP サービスアカウントキーを配置してください（DEPLOY.md 参照）"
-fi
-
-# ==========================================================
-# 7. Firestore 接続テスト
+# 6. Firestore 接続テスト
 # ==========================================================
 VENV_PYTHON=""
 if [ -f .venv/bin/python ]; then
@@ -214,7 +195,7 @@ else
 fi
 
 # ==========================================================
-# 8. crontab エントリの確認
+# 7. crontab エントリの確認
 # ==========================================================
 CRONTAB_CONTENT=$(crontab -l 2>/dev/null || echo "")
 
@@ -233,7 +214,7 @@ else
 fi
 
 # ==========================================================
-# 9. ディスク使用量
+# 8. ディスク使用量
 # ==========================================================
 DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}' | tr -d '%')
 if [ "$DISK_USAGE" -lt 80 ]; then
