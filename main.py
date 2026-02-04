@@ -10,7 +10,6 @@ from typing import Optional
 
 from bot import CalendarBot, setup_commands, create_weekly_embed
 from nlp_processor import NLPProcessor
-from calendar_manager import GoogleCalendarManager
 from firestore_manager import FirestoreManager
 from oauth_handler import OAuthHandler
 from google.cloud import secretmanager
@@ -41,10 +40,6 @@ db_manager = FirestoreManager(project_id=os.getenv('GCP_PROJECT_ID'))
 gemini_api_key = get_secret('GEMINI_API_KEY')
 discord_bot_token = get_secret('DISCORD_BOT_TOKEN')
 nlp_processor = NLPProcessor(gemini_api_key)
-calendar_manager = GoogleCalendarManager(
-    credentials_path=os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'credentials.json'),
-    calendar_id=os.getenv('GOOGLE_CALENDAR_ID', 'primary')
-)
 
 # OAuth Handler（環境変数未設定時は None）
 oauth_client_id = get_secret('GOOGLE_OAUTH_CLIENT_ID')
@@ -61,10 +56,7 @@ else:
 # Discord Bot
 bot = CalendarBot(
     nlp_processor,
-    calendar_manager,
     db_manager,
-    default_credentials_path=os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'credentials.json'),
-    default_calendar_id=os.getenv('GOOGLE_CALENDAR_ID', 'primary'),
     oauth_handler=oauth_handler,
 )
 setup_commands(bot)
