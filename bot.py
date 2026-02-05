@@ -190,10 +190,17 @@ def setup_commands(bot: CalendarBot):
                     await interaction.followup.send(response)
 
         except Exception as e:
-            await interaction.followup.send(
-                f"エラーが発生しました: {str(e)}",
-                ephemeral=True
-            )
+            error_msg = str(e)
+            if "429" in error_msg or "Resource exhausted" in error_msg.lower():
+                await interaction.followup.send(
+                    "⚠️ APIの利用制限に達しました。1分ほど待ってから再度お試しください。",
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    f"エラーが発生しました: {error_msg}",
+                    ephemeral=True
+                )
 
     @bot.event
     async def on_message(message: discord.Message):
@@ -266,7 +273,11 @@ def setup_commands(bot: CalendarBot):
                 await thread.send(question)
 
         except Exception as e:
-            await thread.send(f"エラーが発生しました: {str(e)}\nもう一度入力してください。")
+            error_msg = str(e)
+            if "429" in error_msg or "Resource exhausted" in error_msg.lower():
+                await thread.send("⚠️ APIの利用制限に達しました。1分ほど待ってから再度お試しください。")
+            else:
+                await thread.send(f"エラーが発生しました: {error_msg}\nもう一度入力してください。")
 
     @bot.tree.command(name="今週の予定", description="今週の予定一覧を表示します")
     async def this_week_command(interaction: discord.Interaction):
