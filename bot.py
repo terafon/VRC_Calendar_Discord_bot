@@ -259,13 +259,15 @@ def setup_commands(bot: CalendarBot):
                     return
 
                 # スレッド内で確認フロー
-                response = await _dispatch_action_in_thread(bot, thread, message.author, parsed, session.guild_id)
+                response, should_end_session = await _dispatch_action_in_thread(bot, thread, message.author, parsed, session.guild_id)
                 if response:
                     await thread.send(response)
 
-                # セッション終了 → アーカイブ
-                bot.conversation_manager.remove_session(thread.id)
-                await thread.edit(archived=True)
+                if should_end_session:
+                    # セッション終了 → アーカイブ
+                    bot.conversation_manager.remove_session(thread.id)
+                    await thread.edit(archived=True)
+                # else: 修正モード → セッション継続（何もしない、次のメッセージを待つ）
 
             elif status == "needs_info":
                 # 次の質問を投稿
@@ -517,8 +519,14 @@ async def _dispatch_action_in_thread(
     author: discord.Member,
     parsed: Dict[str, Any],
     guild_id: str,
-) -> Optional[str]:
-    """スレッド内でアクションを実行する"""
+) -> Tuple[Optional[str], bool]:
+    """スレッド内でアクションを実行する
+
+    Returns:
+        Tuple[Optional[str], bool]: (メッセージ, セッション終了フラグ)
+            - セッション終了フラグがTrueの場合、セッションを終了してスレッドをアーカイブ
+            - Falseの場合、セッションを継続（修正モード）
+    """
     action = parsed.get("action")
     if action == "add":
         return await _confirm_and_handle_in_thread(bot, thread, author, parsed, guild_id, "add")
@@ -527,9 +535,10 @@ async def _dispatch_action_in_thread(
     elif action == "delete":
         return await _confirm_and_handle_in_thread(bot, thread, author, parsed, guild_id, "delete")
     elif action == "search":
-        return await _handle_search_in_thread(bot, thread, parsed, guild_id)
+        result = await _handle_search_in_thread(bot, thread, parsed, guild_id)
+        return (result, True)  # 検索は常にセッション終了
     else:
-        return "アクションを認識できませんでした。"
+        return ("アクションを認識できませんでした。", True)
 
 
 async def _confirm_and_handle_in_thread(
@@ -539,15 +548,19 @@ async def _confirm_and_handle_in_thread(
     parsed: Dict[str, Any],
     guild_id: str,
     action: str,
-) -> Optional[str]:
-    """スレッド内での確認→実行フロー"""
+) -> Tuple[Optional[str], bool]:
+    """スレッド内での確認→実行フロー
+
+    Returns:
+        Tuple[Optional[str], bool]: (メッセージ, セッション終了フラグ)
+    """
     if action == "add":
         summary = build_event_summary(parsed)
         title = "予定追加の確認"
     elif action == "edit":
         events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
         if not events:
-            return f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。"
+            return (f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。", True)
         event = events[0]
         summary = (
             f"対象: {event['event_name']} (ID {event['id']})\n"
@@ -557,7 +570,7 @@ async def _confirm_and_handle_in_thread(
     elif action == "delete":
         events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
         if not events:
-            return f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。"
+            return (f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。", True)
         event = events[0]
         summary = (
             f"対象: {event['event_name']} (ID {event['id']})\n"
@@ -565,7 +578,7 @@ async def _confirm_and_handle_in_thread(
         )
         title = "予定削除の確認"
     else:
-        return "不正なアクションです。"
+        return ("不正なアクションです。", True)
 
     # 確認Embed + ボタン
     embed = discord.Embed(
@@ -577,17 +590,25 @@ async def _confirm_and_handle_in_thread(
     await thread.send(embed=embed, view=view)
     await view.wait()
 
-    if not view.value:
-        return "キャンセルしました。"
+    if view.value == ThreadConfirmView.CANCELLED or view.value is None:
+        # キャンセルまたはタイムアウト → セッション終了
+        return (None, True)
 
-    # 実行
+    if view.value == ThreadConfirmView.EDIT:
+        # 修正モード → セッション継続
+        return (None, False)
+
+    # 確定 → 実行してセッション終了
     if action == "add":
-        return await _handle_add_event_direct(bot, guild_id, thread.parent_id, author.id, parsed)
+        result = await _handle_add_event_direct(bot, guild_id, thread.parent_id, author.id, parsed)
+        return (result, True)
     elif action == "edit":
-        return await _handle_edit_event_direct(bot, guild_id, parsed)
+        result = await _handle_edit_event_direct(bot, guild_id, parsed)
+        return (result, True)
     elif action == "delete":
-        return await _handle_delete_event_direct(bot, guild_id, parsed)
-    return None
+        result = await _handle_delete_event_direct(bot, guild_id, parsed)
+        return (result, True)
+    return (None, True)
 
 
 async def _handle_search_in_thread(
@@ -620,24 +641,35 @@ async def _handle_search_in_thread(
 # ---- スレッド内用の確認ビュー ----
 
 class ThreadConfirmView(discord.ui.View):
+    """スレッド内の確認ビュー（確定/修正/キャンセル）"""
+    CONFIRMED = "confirmed"
+    EDIT = "edit"
+    CANCELLED = "cancelled"
+
     def __init__(self, author_id: int):
         super().__init__(timeout=120)
         self.author_id = author_id
-        self.value: Optional[bool] = None
+        self.value: Optional[str] = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.author_id
 
     @discord.ui.button(label="確定", style=discord.ButtonStyle.green)
     async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.value = True
+        self.value = self.CONFIRMED
         await interaction.response.send_message("✅ 確定しました。処理を実行します。")
+        self.stop()
+
+    @discord.ui.button(label="修正", style=discord.ButtonStyle.blurple)
+    async def edit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = self.EDIT
+        await interaction.response.send_message("📝 修正モードに入ります。変更したい内容を入力してください。\n例: 「時刻を22時に変更」「タグを追加して」")
         self.stop()
 
     @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.red)
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.value = False
-        await interaction.response.send_message("キャンセルしました。")
+        self.value = self.CANCELLED
+        await interaction.response.send_message("❌ キャンセルしました。セッションを終了します。")
         self.stop()
 
 
