@@ -201,17 +201,11 @@ class NLPProcessor:
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(
             'gemini-1.5-flash',
-            generation_config={
-                "temperature": 0.1,
-                "response_mime_type": "application/json"
-            }
+            generation_config={"temperature": 0.1}
         )
         self.conversation_model = genai.GenerativeModel(
             'gemini-1.5-flash',
-            generation_config={
-                "temperature": 0.3,
-                "response_mime_type": "application/json"
-            }
+            generation_config={"temperature": 0.3}
         )
 
     def parse_user_message(self, user_message: str) -> Dict[str, Any]:
