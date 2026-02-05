@@ -143,6 +143,20 @@ VRChat上のイベント（集会、ワールド紹介、アバター試着会�
 - search アクションの場合は event_data は不要です。search_query を含めてください。
 - delete/edit アクションの場合は event_name が分かれば status: complete にしてください。
 - duration_minutes のデフォルトは 60 です。ユーザーが指定しなければ 60 を設定してください。
+
+# 非常に重要: status の判定ルール
+action=add の場合、以下の必須フィールドがすべて揃っていなければ **必ず** status: needs_info を返してください:
+1. event_name（予定名）
+2. recurrence（開催頻度）
+3. time（開始時刻）
+4. weekday（曜日）※ただし recurrence が irregular の場合は不要
+
+例: ユーザーが「VRC集会を登録」とだけ入力した場合:
+- event_name: "VRC集会" (あり)
+- recurrence: null (なし)
+- time: null (なし)
+- weekday: null (なし)
+→ 必須フィールドが不足しているので、status: needs_info を返し、開催頻度を質問する
 """
 
 
@@ -238,6 +252,44 @@ class NLPProcessor:
         """チャットセッションにメッセージを送信し、構造化レスポンスを返す"""
         response = chat_session.send_message(user_message)
         result = _parse_json_response(response.text)
+
+        # 必須フィールドの検証と強制修正
+        result = self._ensure_required_fields(result)
+        return result
+
+    def _ensure_required_fields(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """action=addの場合、必須フィールドが揃っているか検証し、不足があればneeds_infoに強制変更"""
+        action = result.get("action")
+        status = result.get("status", "complete")
+
+        if action != "add" or status == "needs_info":
+            return result
+
+        event_data = result.get("event_data", {})
+        missing_fields = []
+
+        # 必須フィールドをチェック
+        if not event_data.get("event_name"):
+            missing_fields.append("予定名")
+        if not event_data.get("recurrence"):
+            missing_fields.append("開催頻度（毎週/隔週/第n週/不定期）")
+        if not event_data.get("time"):
+            missing_fields.append("開始時刻")
+
+        recurrence = event_data.get("recurrence")
+        if recurrence and recurrence != "irregular" and event_data.get("weekday") is None:
+            missing_fields.append("曜日")
+
+        if missing_fields:
+            # 不足フィールドがある場合、needs_infoに強制変更
+            question = f"以下の情報を教えてください:\n• {missing_fields[0]}"
+            return {
+                "status": "needs_info",
+                "action": action,
+                "question": question,
+                "event_data": event_data,
+            }
+
         return result
 
     def _validate_result(self, result: Dict[str, Any]):
