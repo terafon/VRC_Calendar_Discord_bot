@@ -199,12 +199,13 @@ def _parse_json_response(text: str) -> Dict[str, Any]:
 class NLPProcessor:
     def __init__(self, api_key: str):
         genai.configure(api_key=api_key)
+        # gemini-2.0-flash が最新の推奨モデル
         self.model = genai.GenerativeModel(
-            'gemini-1.5-flash',
+            'gemini-2.0-flash',
             generation_config={"temperature": 0.1}
         )
         self.conversation_model = genai.GenerativeModel(
-            'gemini-1.5-flash',
+            'gemini-2.0-flash',
             generation_config={"temperature": 0.3}
         )
 
