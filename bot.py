@@ -138,11 +138,14 @@ def setup_commands(bot: CalendarBot):
             if status == "needs_info":
                 # スレッドを作成して対話モードに入る
                 thread_name = f"予定管理: {メッセージ[:20]}"
-                # followupメッセージを送信してそこにスレッドを作成
-                msg = await interaction.followup.send(
-                    f"💬 情報が不足しているため、対話モードで情報を収集します。\nスレッド「{thread_name}」をご確認ください。"
+                # チャンネルに直接スレッドを作成
+                thread = await interaction.channel.create_thread(
+                    name=thread_name,
+                    type=discord.ChannelType.public_thread,
                 )
-                thread = await msg.create_thread(name=thread_name)
+                await interaction.followup.send(
+                    f"💬 情報が不足しているため、対話モードで情報を収集します。\nスレッド {thread.mention} をご確認ください。"
+                )
 
                 # セッションを登録
                 session = bot.conversation_manager.create_session(
