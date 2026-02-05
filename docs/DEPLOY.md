@@ -1,6 +1,6 @@
 # VRC Calendar Discord Bot - デプロイガイド
 
-このガイドでは、VRC Calendar Discord Botをデプロイする手順を説明します。
+このガイドでは、VRChatイベント管理用Discord Botをデプロイする手順を説明します。
 
 ## 目次
 
