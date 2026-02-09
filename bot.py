@@ -44,6 +44,28 @@ GOOGLE_CALENDAR_COLORS = {
     "11": {"name": "トマト", "hex": "#D50000"},
 }
 
+# colorId → 絵文字マッピング（SelectMenuやパレット表示用）
+COLOR_EMOJI = {
+    "1": "🪻", "2": "🌿", "3": "🍇", "4": "🌸",
+    "5": "🍌", "6": "🍊", "7": "🦚", "8": "✏️",
+    "9": "🫐", "10": "🌿", "11": "🍅",
+}
+
+
+def _create_color_palette_embeds() -> list:
+    """Google Calendar色パレットのEmbed一覧を作成（各色のカラーバーで実際の色を表示）"""
+    embeds = []
+    for cid, info in GOOGLE_CALENDAR_COLORS.items():
+        hex_int = int(info['hex'].lstrip('#'), 16)
+        emoji = COLOR_EMOJI.get(cid, "")
+        embed = discord.Embed(
+            description=f"{emoji} **{cid}** {info['name']}",
+            color=discord.Color(hex_int),
+        )
+        embeds.append(embed)
+    return embeds
+
+
 CANCEL_KEYWORDS = {"キャンセル", "やめる", "やめ", "中止", "取り消し", "cancel", "quit", "exit"}
 
 
@@ -465,23 +487,31 @@ def setup_commands(bot: CalendarBot):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
 
-        # Google Calendar色パレットを表示
-        color_options_text = "\n".join(
-            f"`{cid}`: {info['name']} ({info['hex']})"
-            for cid, info in GOOGLE_CALENDAR_COLORS.items()
+        # Google Calendar色パレットをEmbed一覧で表示（カラーバーで実際の色が見える）
+        palette_embeds = _create_color_palette_embeds()
+
+        # 色パレット表示（1メッセージ最大10 Embed → 1-10を先に送信）
+        await interaction.followup.send(
+            content="🎨 **Google Calendar 色パレット**",
+            embeds=palette_embeds[:10],
+            ephemeral=True,
         )
 
-        embed = discord.Embed(
+        # 残りの色(11) + ウィザード本体
+        wizard_embed = discord.Embed(
             title="🎨 色初期設定ウィザード",
             description=(
                 "繰り返しタイプごとにGoogleカレンダーの色を設定します。\n"
-                "各カテゴリに対してcolorIdを選択してください。\n\n"
-                f"**利用可能な色:**\n{color_options_text}"
+                "上の色パレットを参考に、各カテゴリに対して色を選択してください。"
             ),
             color=discord.Color.blue(),
         )
         view = ColorSetupView(interaction.user.id, guild_id, bot)
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(
+            embeds=[palette_embeds[10], wizard_embed],
+            view=view,
+            ephemeral=True,
+        )
 
     @bot.tree.command(name="カレンダー設定", description="使用するカレンダーIDを設定します")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -852,6 +882,7 @@ class ColorSetupView(discord.ui.View):
                 label=f"{cid}: {info['name']}",
                 value=cid,
                 description=info['hex'],
+                emoji=COLOR_EMOJI.get(cid),
             )
             for cid, info in GOOGLE_CALENDAR_COLORS.items()
         ]
@@ -980,6 +1011,7 @@ class ColorSelectForEventView(discord.ui.View):
                 label=f"{cid}: {info['name']}",
                 value=cid,
                 description=info['hex'],
+                emoji=COLOR_EMOJI.get(cid),
             )
             for cid, info in GOOGLE_CALENDAR_COLORS.items()
         ]
