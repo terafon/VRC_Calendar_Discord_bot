@@ -1119,10 +1119,12 @@ async def _handle_add_event_direct(
     vrc_group_url = parsed.get('vrc_group_url') or None
     official_url = parsed.get('official_url') or None
 
-    description = parsed.get('description', '')
+    raw_description = parsed.get('description', '')
+    # Google Calendar用にURL情報を追記した説明文を構築
+    cal_description = raw_description
     url_section = _build_url_description_section(x_url, vrc_group_url, official_url)
     if url_section:
-        description = f"{description}\n\n{url_section}".strip()
+        cal_description = f"{raw_description}\n\n{url_section}".strip()
 
     event_id = bot.db_manager.add_event(
         guild_id=guild_id,
@@ -1134,7 +1136,7 @@ async def _handle_add_event_direct(
         time=parsed.get('time'),
         weekday=parsed.get('weekday'),
         duration_minutes=parsed.get('duration_minutes', 60),
-        description=description,
+        description=raw_description,
         color_name=color_name,
         x_url=x_url,
         vrc_group_url=vrc_group_url,
@@ -1161,7 +1163,7 @@ async def _handle_add_event_direct(
             dates=dates,
             time_str=parsed['time'],
             duration_minutes=parsed.get('duration_minutes', 60),
-            description=description,
+            description=cal_description,
             tags=tags,
             color_id=color_id,
             extended_props={
@@ -1246,15 +1248,17 @@ async def _handle_edit_event_direct(
         google_updates = {}
         if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
         if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url')):
-            description = parsed.get('description') or event.get('description', '')
+            # Firestoreのdescriptionは生テキスト（URL情報を含まない）
+            raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
             url_section = _build_url_description_section(
                 updates.get('x_url', event.get('x_url')),
                 updates.get('vrc_group_url', event.get('vrc_group_url')),
                 updates.get('official_url', event.get('official_url')),
             )
+            cal_description = raw_desc
             if url_section:
-                description = f"{description}\n\n{url_section}".strip()
-            google_updates['description'] = description
+                cal_description = f"{raw_desc}\n\n{url_section}".strip()
+            google_updates['description'] = cal_description
         if 'color_name' in updates:
             color_name = updates.get('color_name')
             color_id = None
@@ -1334,11 +1338,12 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
     vrc_group_url = parsed.get('vrc_group_url') or None
     official_url = parsed.get('official_url') or None
 
-    # 説明欄にURLを追記
-    description = parsed.get('description', '')
+    # Firestoreには生のdescription、Google CalendarにはURL付きを使用
+    raw_description = parsed.get('description', '')
+    cal_description = raw_description
     url_section = _build_url_description_section(x_url, vrc_group_url, official_url)
     if url_section:
-        description = f"{description}\n\n{url_section}".strip()
+        cal_description = f"{raw_description}\n\n{url_section}".strip()
 
     # データベースに保存
     event_id = bot.db_manager.add_event(
@@ -1351,7 +1356,7 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
         time=parsed.get('time'),
         weekday=parsed.get('weekday'),
         duration_minutes=parsed.get('duration_minutes', 60),
-        description=description,
+        description=raw_description,
         color_name=color_name,
         x_url=x_url,
         vrc_group_url=vrc_group_url,
@@ -1381,7 +1386,7 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
             dates=dates,
             time_str=parsed['time'],
             duration_minutes=parsed.get('duration_minutes', 60),
-            description=description,
+            description=cal_description,
             tags=tags,
             color_id=color_id,
             extended_props={
@@ -1469,15 +1474,17 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
         google_updates = {}
         if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
         if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url')):
-            description = parsed.get('description') or event.get('description', '')
+            # Firestoreのdescriptionは生テキスト（URL情報を含まない）
+            raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
             url_section = _build_url_description_section(
                 updates.get('x_url', event.get('x_url')),
                 updates.get('vrc_group_url', event.get('vrc_group_url')),
                 updates.get('official_url', event.get('official_url')),
             )
+            cal_description = raw_desc
             if url_section:
-                description = f"{description}\n\n{url_section}".strip()
-            google_updates['description'] = description
+                cal_description = f"{raw_desc}\n\n{url_section}".strip()
+            google_updates['description'] = cal_description
         if 'color_name' in updates:
             color_name = updates.get('color_name')
             color_id = None
