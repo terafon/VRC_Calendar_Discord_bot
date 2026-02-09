@@ -134,7 +134,19 @@ VRChat上のイベント（集会、ワールド紹介、アバター試着会�
 - 一度に1つの質問をしてください
 - 利用可能な選択肢がある場合は提示してください
 - フレンドリーで親しみやすい日本語を使ってください
-- 質問の順序: 開催頻度 → 曜日 → 時刻 → タグ（任意） → 色（任意）
+- 質問の順序: 開催頻度 → 曜日 → 時刻 → タグ（任意）
+
+# 色の割当ルール
+- 色は繰り返しタイプに基づいてシステムが自動で割り当てます。
+- ユーザーに色を質問する必要はありません。
+- ただし、ユーザーが明示的に色を指定した場合はその色名を color_name に設定してください。
+
+# タグ選択のルール
+- タグはグループごとに分類されています。
+- タグが登録されている各グループから、最も適切なタグを1つ選択してください。
+- 複数グループがある場合、それぞれのグループから1つずつ選び、tags配列にまとめてください。
+- タグが未登録のグループは無視してください。
+- タグを質問する際は、各グループ名と説明を提示してユーザーに選んでもらってください。
 
 {server_context}
 
@@ -170,25 +182,28 @@ def _build_server_context(server_context: Optional[Dict[str, Any]] = None) -> st
     tag_groups = server_context.get("tag_groups", [])
     tags = server_context.get("tags", [])
     if tag_groups or tags:
-        lines.append("# このサーバーで利用可能なタグ")
+        lines.append("# このサーバーで利用可能なタグ（グループごとに1つ選択）")
         tags_by_group: Dict[int, list] = {}
         for tag in tags:
             tags_by_group.setdefault(tag.get("group_id", 0), []).append(tag)
         for group in tag_groups:
             group_tags = tags_by_group.get(group["id"], [])
             tag_names = [t["name"] for t in group_tags]
+            desc = f" - {group['description']}" if group.get('description') else ""
             if tag_names:
-                lines.append(f"【{group['name']}】{' / '.join(tag_names)}")
+                lines.append(f"【{group['name']}{desc}】{' / '.join(tag_names)}")
         if not tag_groups and tags:
             tag_names = [t["name"] for t in tags]
             lines.append(f"利用可能: {' / '.join(tag_names)}")
 
     color_presets = server_context.get("color_presets", [])
     if color_presets:
-        lines.append("\n# このサーバーで利用可能な色プリセット")
+        lines.append("\n# 色プリセット（繰り返しタイプで自動割当。明示的指定しない限り設定不要）")
         for preset in color_presets:
+            rt = preset.get('recurrence_type')
+            rt_label = f" [→ {rt}]" if rt else ""
             desc = f"({preset['description']})" if preset.get("description") else ""
-            lines.append(f"- {preset['name']} {desc}")
+            lines.append(f"- {preset['name']}{rt_label} {desc}")
 
     event_names = server_context.get("event_names", [])
     if event_names:

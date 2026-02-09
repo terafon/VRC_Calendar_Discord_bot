@@ -21,6 +21,29 @@ RECURRENCE_TYPES = {
     "irregular": "不定期"
 }
 
+COLOR_CATEGORIES = [
+    {"key": "weekly", "label": "毎週", "description": "毎週開催のイベント"},
+    {"key": "biweekly", "label": "隔週", "description": "隔週開催のイベント"},
+    {"key": "monthly", "label": "月1回", "description": "月に1回開催のイベント"},
+    {"key": "nth_week", "label": "第n週", "description": "月に複数回（第2,4週など）開催のイベント"},
+    {"key": "irregular", "label": "不定期", "description": "不定期開催のイベント"},
+]
+
+# Google Calendar colorId → 色名マッピング
+GOOGLE_CALENDAR_COLORS = {
+    "1": {"name": "ラベンダー", "hex": "#7986CB"},
+    "2": {"name": "セージ", "hex": "#33B679"},
+    "3": {"name": "ブドウ", "hex": "#8E24AA"},
+    "4": {"name": "フラミンゴ", "hex": "#E67C73"},
+    "5": {"name": "バナナ", "hex": "#F6BF26"},
+    "6": {"name": "ミカン", "hex": "#F4511E"},
+    "7": {"name": "ピーコック", "hex": "#039BE5"},
+    "8": {"name": "グラファイト", "hex": "#616161"},
+    "9": {"name": "ブルーベリー", "hex": "#3F51B5"},
+    "10": {"name": "バジル", "hex": "#0B8043"},
+    "11": {"name": "トマト", "hex": "#D50000"},
+}
+
 CANCEL_KEYWORDS = {"キャンセル", "やめる", "やめ", "中止", "取り消し", "cancel", "quit", "exit"}
 
 
@@ -96,6 +119,24 @@ class CalendarBot(commands.Bot):
         if not self.cleanup_sessions.is_running():
             self.cleanup_sessions.start()
 
+        # 既存サーバーの色セットアップマイグレーション
+        for guild in self.guilds:
+            guild_id = str(guild.id)
+            try:
+                oauth_tokens = self.db_manager.get_oauth_tokens(guild_id)
+                if oauth_tokens:
+                    guild_doc = self.db_manager._guild_ref(guild_id).get()
+                    if guild_doc.exists:
+                        data = guild_doc.to_dict()
+                        if not data.get("default_colors_initialized", False):
+                            self.db_manager.mark_color_setup_pending(guild_id)
+                            print(f"Guild {guild_id}: color setup pending flag set")
+                    else:
+                        self.db_manager.mark_color_setup_pending(guild_id)
+                        print(f"Guild {guild_id}: color setup pending flag set (new doc)")
+            except Exception as e:
+                print(f"Migration error for guild {guild_id}: {e}")
+
     @tasks.loop(minutes=1)
     async def cleanup_sessions(self):
         """期限切れの会話セッションを定期的にクリーンアップ"""
@@ -126,6 +167,17 @@ def setup_commands(bot: CalendarBot):
 
         try:
             guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
+            # 色セットアップ未完了チェック
+            if bot.db_manager.is_color_setup_pending(guild_id):
+                await interaction.followup.send(
+                    "⚠️ 色の初期設定がまだ完了していません。\n"
+                    "先に `/色初期設定` コマンドを実行して、繰り返しタイプごとのデフォルト色を設定してください。\n"
+                    "スキップする場合は、管理者が `/色初期設定` を実行してください。",
+                    ephemeral=True
+                )
+                return
+
             server_context = bot._get_server_context(guild_id)
 
             # マルチターン会話セッションでメッセージを送信
@@ -169,6 +221,15 @@ def setup_commands(bot: CalendarBot):
                 event_data = result.get("event_data", {})
                 if event_data and action in ("add", "edit", "delete"):
                     parsed = _event_data_to_parsed(event_data, action)
+                    # 色自動割当（addまたはeditでcolor_name未指定の場合）
+                    if action in ("add", "edit") and not parsed.get("color_name"):
+                        auto_color = _auto_assign_color(
+                            bot.db_manager, guild_id,
+                            parsed.get("recurrence"), parsed.get("nth_weeks"),
+                        )
+                        if auto_color:
+                            parsed["color_name"] = auto_color["name"]
+                            parsed["_auto_color"] = True
                 elif action == "search":
                     parsed = {
                         "action": "search",
@@ -249,6 +310,15 @@ def setup_commands(bot: CalendarBot):
                 # 情報収集完了 → 確認フロー
                 if action in ("add", "edit", "delete"):
                     parsed = _event_data_to_parsed(session.partial_data, action)
+                    # 色自動割当（addまたはeditでcolor_name未指定の場合）
+                    if action in ("add", "edit") and not parsed.get("color_name"):
+                        auto_color = _auto_assign_color(
+                            bot.db_manager, session.guild_id,
+                            parsed.get("recurrence"), parsed.get("nth_weeks"),
+                        )
+                        if auto_color:
+                            parsed["color_name"] = auto_color["name"]
+                            parsed["_auto_color"] = True
                 elif action == "search":
                     parsed = {
                         "action": "search",
@@ -388,6 +458,31 @@ def setup_commands(bot: CalendarBot):
         await update_legend_event(bot, interaction)
         await interaction.followup.send("✅ 凡例イベントを更新しました。", ephemeral=True)
 
+    @bot.tree.command(name="色初期設定", description="繰り返しタイプごとのデフォルト色を設定します")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def color_setup_command(interaction: discord.Interaction):
+        """色セットアップウィザード"""
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
+        # Google Calendar色パレットを表示
+        color_options_text = "\n".join(
+            f"`{cid}`: {info['name']} ({info['hex']})"
+            for cid, info in GOOGLE_CALENDAR_COLORS.items()
+        )
+
+        embed = discord.Embed(
+            title="🎨 色初期設定ウィザード",
+            description=(
+                "繰り返しタイプごとにGoogleカレンダーの色を設定します。\n"
+                "各カテゴリに対してcolorIdを選択してください。\n\n"
+                f"**利用可能な色:**\n{color_options_text}"
+            ),
+            color=discord.Color.blue(),
+        )
+        view = ColorSetupView(interaction.user.id, guild_id, bot)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
     @bot.tree.command(name="カレンダー設定", description="使用するカレンダーIDを設定します")
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(calendar_id="GoogleカレンダーID（例: abc123@group.calendar.google.com）")
@@ -466,6 +561,30 @@ def setup_commands(bot: CalendarBot):
 
 
 # ---- ヘルパー関数 ----
+
+def _resolve_color_category(recurrence: Optional[str], nth_weeks: Optional[List[int]]) -> Optional[str]:
+    """recurrence + nth_weeks から色カテゴリキーを返す"""
+    if recurrence == "weekly":
+        return "weekly"
+    if recurrence == "biweekly":
+        return "biweekly"
+    if recurrence == "nth_week":
+        if nth_weeks and len(nth_weeks) == 1:
+            return "monthly"
+        return "nth_week"
+    if recurrence == "irregular":
+        return "irregular"
+    return None
+
+
+def _auto_assign_color(db_manager: FirestoreManager, guild_id: str, recurrence: Optional[str], nth_weeks: Optional[List[int]]) -> Optional[Dict[str, str]]:
+    """色カテゴリに基づいて色プリセットを自動割当。
+    Returns: {"name": "色名", "color_id": "9"} or None"""
+    category = _resolve_color_category(recurrence, nth_weeks)
+    if not category:
+        return None
+    return db_manager.get_color_preset_by_recurrence(guild_id, category)
+
 
 def _event_data_to_parsed(event_data: Dict[str, Any], action: str) -> Dict[str, Any]:
     """会話で収集したevent_dataを既存のparsedフォーマットに変換する"""
@@ -554,6 +673,40 @@ async def _confirm_and_handle_in_thread(
     Returns:
         Tuple[Optional[str], bool]: (メッセージ, セッション終了フラグ)
     """
+    # 色が未設定の場合、新色追加ダイアログ（addのみ）
+    if action == "add" and not parsed.get("color_name"):
+        recurrence = parsed.get("recurrence")
+        nth_weeks = parsed.get("nth_weeks")
+        category = _resolve_color_category(recurrence, nth_weeks)
+        if category:
+            cat_labels = {c["key"]: c["label"] for c in COLOR_CATEGORIES}
+            category_label = cat_labels.get(category, category)
+            new_color_view = NewColorLegendView(author.id, category_label)
+            await thread.send(
+                f"🎨 「{category_label}」に対応する色プリセットがありません。\n新しく色を追加しますか？",
+                view=new_color_view,
+            )
+            await new_color_view.wait()
+
+            if new_color_view.value == "add":
+                color_select_view = ColorSelectForEventView(author.id)
+                await thread.send("📎 色を選択してください:", view=color_select_view)
+                await color_select_view.wait()
+
+                if color_select_view.selected_color_id:
+                    # プリセットを登録して色を自動割当
+                    bot.db_manager.add_color_preset(
+                        guild_id, category_label, color_select_view.selected_color_id,
+                        description=f"{category_label}のイベント",
+                        recurrence_type=category, is_auto_generated=True,
+                    )
+                    parsed["color_name"] = category_label
+                    parsed["_auto_color"] = True
+                    color_info = GOOGLE_CALENDAR_COLORS.get(color_select_view.selected_color_id, {})
+                    await thread.send(
+                        f"✅ 色プリセット「{category_label}」（{color_info.get('name', '?')} / colorId {color_select_view.selected_color_id}）を登録しました。"
+                    )
+
     if action == "add":
         summary = build_event_summary(parsed)
         title = "予定追加の確認"
@@ -671,6 +824,181 @@ class ThreadConfirmView(discord.ui.View):
         self.value = self.CANCELLED
         await interaction.response.send_message("❌ キャンセルしました。セッションを終了します。")
         self.stop()
+
+
+# ---- 色セットアップウィザード ----
+
+class ColorSetupView(discord.ui.View):
+    """カテゴリごとにcolorIdを選択するウィザード"""
+
+    def __init__(self, author_id: int, guild_id: str, bot: CalendarBot):
+        super().__init__(timeout=300)
+        self.author_id = author_id
+        self.guild_id = guild_id
+        self.bot = bot
+        self.selections: Dict[str, Dict[str, str]] = {}  # key -> {"color_id": "9", "name": "色名"}
+        self.current_index = 0
+        self._add_select_for_current()
+
+    def _add_select_for_current(self):
+        """現在のカテゴリ用のSelectMenuを追加"""
+        self.clear_items()
+        if self.current_index >= len(COLOR_CATEGORIES):
+            return
+
+        category = COLOR_CATEGORIES[self.current_index]
+        options = [
+            discord.SelectOption(
+                label=f"{cid}: {info['name']}",
+                value=cid,
+                description=info['hex'],
+            )
+            for cid, info in GOOGLE_CALENDAR_COLORS.items()
+        ]
+
+        select = discord.ui.Select(
+            placeholder=f"{category['label']}（{category['description']}）の色を選択",
+            options=options,
+            custom_id=f"color_setup_{category['key']}",
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+        # スキップボタン
+        skip_btn = discord.ui.Button(label="全てスキップ", style=discord.ButtonStyle.grey, custom_id="skip_all")
+        skip_btn.callback = self._on_skip_all
+        self.add_item(skip_btn)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return
+
+        category = COLOR_CATEGORIES[self.current_index]
+        selected_color_id = interaction.data["values"][0]
+        color_info = GOOGLE_CALENDAR_COLORS[selected_color_id]
+
+        # カテゴリのラベルを色名として使用
+        self.selections[category["key"]] = {
+            "color_id": selected_color_id,
+            "name": category["label"],
+            "description": category["description"],
+        }
+
+        self.current_index += 1
+
+        if self.current_index >= len(COLOR_CATEGORIES):
+            # 全カテゴリ選択完了 → 一括登録
+            await self._finalize(interaction)
+        else:
+            # 次のカテゴリ
+            self._add_select_for_current()
+            next_cat = COLOR_CATEGORIES[self.current_index]
+            await interaction.response.edit_message(
+                content=f"✅ 「{category['label']}」→ {color_info['name']}（colorId {selected_color_id}）に設定しました。\n\n次は **{next_cat['label']}** の色を選択してください。",
+                view=self,
+            )
+
+    async def _on_skip_all(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return
+        # セットアップ完了フラグだけ設定
+        self.bot.db_manager.mark_color_setup_done(self.guild_id)
+        await interaction.response.edit_message(
+            content="⏭️ 色初期設定をスキップしました。後から `/色初期設定` で設定できます。",
+            view=None,
+        )
+        self.stop()
+
+    async def _finalize(self, interaction: discord.Interaction):
+        """選択完了後、色プリセットを一括登録"""
+        presets_data = []
+        for key, data in self.selections.items():
+            presets_data.append({
+                "name": data["name"],
+                "color_id": data["color_id"],
+                "recurrence_type": key,
+                "description": data["description"],
+            })
+
+        self.bot.db_manager.initialize_default_color_presets(self.guild_id, presets_data)
+
+        # 凡例イベント更新
+        cal_mgr = self.bot.get_calendar_manager_for_guild(int(self.guild_id))
+        if cal_mgr:
+            await _update_legend_event_by_guild(self.bot, self.guild_id)
+
+        summary_lines = []
+        for key, data in self.selections.items():
+            color_info = GOOGLE_CALENDAR_COLORS.get(data["color_id"], {})
+            summary_lines.append(f"• {data['name']}: {color_info.get('name', '?')}（colorId {data['color_id']}）")
+
+        await interaction.response.edit_message(
+            content="✅ 色初期設定が完了しました！\n\n" + "\n".join(summary_lines),
+            view=None,
+        )
+        self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id
+
+
+class NewColorLegendView(discord.ui.View):
+    """新色プリセット追加確認（追加 / スキップ）"""
+
+    def __init__(self, author_id: int, category_label: str):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.category_label = category_label
+        self.value: Optional[str] = None  # "add" or "skip"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id
+
+    @discord.ui.button(label="色を追加", style=discord.ButtonStyle.green)
+    async def add_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = "add"
+        await interaction.response.defer()
+        self.stop()
+
+    @discord.ui.button(label="スキップ", style=discord.ButtonStyle.grey)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = "skip"
+        await interaction.response.defer()
+        self.stop()
+
+
+class ColorSelectForEventView(discord.ui.View):
+    """Google Calendar colorId 選択（SelectMenu 1-11）- イベント追加時用"""
+
+    def __init__(self, author_id: int):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.selected_color_id: Optional[str] = None
+
+        options = [
+            discord.SelectOption(
+                label=f"{cid}: {info['name']}",
+                value=cid,
+                description=info['hex'],
+            )
+            for cid, info in GOOGLE_CALENDAR_COLORS.items()
+        ]
+        select = discord.ui.Select(
+            placeholder="色を選択してください",
+            options=options,
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return
+        self.selected_color_id = interaction.data["values"][0]
+        await interaction.response.defer()
+        self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id
 
 
 # ---- ダイレクト実行関数（interaction不要版） ----
@@ -796,6 +1124,17 @@ async def _handle_edit_event_direct(
             if not preset:
                 return f"❌ 色名「{color_name}」が登録されていません。"
         updates['color_name'] = color_name
+
+    # recurrence変更時の色自動再割当
+    if 'recurrence' in parsed and 'color_name' not in parsed:
+        new_recurrence = parsed.get('recurrence')
+        new_nth_weeks = parsed.get('nth_weeks') or (
+            json.loads(event['nth_weeks']) if event.get('nth_weeks') else None
+        )
+        auto_color = _auto_assign_color(bot.db_manager, guild_id, new_recurrence, new_nth_weeks)
+        if auto_color:
+            updates['color_name'] = auto_color['name']
+
     if 'urls' in parsed:
         updates['urls'] = parsed.get('urls', [])
 
@@ -990,6 +1329,17 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
             if not preset:
                 return f"❌ 色名「{color_name}」が登録されていません。"
         updates['color_name'] = color_name
+
+    # recurrence変更時の色自動再割当
+    if 'recurrence' in parsed and 'color_name' not in parsed:
+        new_recurrence = parsed.get('recurrence')
+        new_nth_weeks = parsed.get('nth_weeks') or (
+            json.loads(event['nth_weeks']) if event.get('nth_weeks') else None
+        )
+        auto_color = _auto_assign_color(bot.db_manager, guild_id, new_recurrence, new_nth_weeks)
+        if auto_color:
+            updates['color_name'] = auto_color['name']
+
     if 'urls' in parsed:
         updates['urls'] = parsed.get('urls', [])
 
@@ -1124,13 +1474,18 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
     weekdays = ['月', '火', '水', '木', '金', '土', '日']
     weekday_val = parsed.get('weekday')
     weekday_str = weekdays[weekday_val] if isinstance(weekday_val, int) and 0 <= weekday_val <= 6 else "未設定"
+    color_name = parsed.get('color_name', '未設定')
+    if parsed.get('_auto_color') and color_name and color_name != '未設定':
+        color_display = f"{color_name}（自動割当）"
+    else:
+        color_display = color_name
     return (
         f"予定名: {parsed.get('event_name', '未設定')}\n"
         f"繰り返し: {RECURRENCE_TYPES.get(parsed.get('recurrence'), parsed.get('recurrence'))} {nth_str}\n"
         f"曜日: {weekday_str}\n"
         f"時刻: {parsed.get('time', '未設定')}\n"
         f"所要時間: {parsed.get('duration_minutes', 60)}分\n"
-        f"色: {parsed.get('color_name', '未設定')}\n"
+        f"色: {color_display}\n"
         f"タグ: {', '.join(tags) if tags else 'なし'}\n"
         f"URL: {', '.join(urls) if urls else 'なし'}\n"
         f"説明: {parsed.get('description', '')}"
@@ -1318,7 +1673,7 @@ def create_help_embed() -> discord.Embed:
     )
     embed.add_field(
         name="色/タグ管理",
-        value="`/色一覧` `/色追加` `/色削除` `/タググループ一覧` `/タググループ追加` `/タググループ削除` `/タグ追加` `/タグ削除`",
+        value="`/色初期設定` `/色一覧` `/色追加` `/色削除` `/タググループ一覧` `/タググループ追加` `/タググループ削除` `/タグ追加` `/タグ削除`",
         inline=False
     )
     embed.add_field(
@@ -1341,7 +1696,12 @@ def create_help_embed() -> discord.Embed:
 def create_color_list_embed(presets: List[Dict[str, Any]], palette: Dict[str, Any]) -> discord.Embed:
     embed = discord.Embed(title="🎨 色プリセット", color=discord.Color.blue())
     if presets:
-        lines = [f"{p['name']} -> colorId {p['color_id']} ({p.get('description','')})" for p in presets]
+        cat_labels = {c["key"]: c["label"] for c in COLOR_CATEGORIES}
+        lines = []
+        for p in presets:
+            rt = p.get('recurrence_type')
+            rt_label = f" [→ {cat_labels.get(rt, rt)}]" if rt else ""
+            lines.append(f"{p['name']} -> colorId {p['color_id']}{rt_label} ({p.get('description','')})")
         embed.add_field(name="登録済み", value="\n".join(lines), inline=False)
     else:
         embed.add_field(name="登録済み", value="なし", inline=False)
@@ -1372,8 +1732,8 @@ def create_tag_group_list_embed(groups: List[Dict[str, Any]], tags: List[Dict[st
         )
     return embed
 
-async def update_legend_event(bot: CalendarBot, interaction: discord.Interaction):
-    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+async def _update_legend_event_by_guild(bot: CalendarBot, guild_id: str):
+    """guild_idベースで凡例イベントを更新（interactionなし版）"""
     groups = bot.db_manager.list_tag_groups(guild_id)
     tags = bot.db_manager.list_tags(guild_id)
     presets = bot.db_manager.list_color_presets(guild_id)
@@ -1381,7 +1741,12 @@ async def update_legend_event(bot: CalendarBot, interaction: discord.Interaction
     lines = ["【色プリセット】"]
     if presets:
         for p in presets:
-            lines.append(f"- {p['name']} (colorId {p['color_id']}): {p.get('description','')}")
+            rt = p.get('recurrence_type')
+            rt_label = ""
+            if rt:
+                cat_labels = {c["key"]: c["label"] for c in COLOR_CATEGORIES}
+                rt_label = f" → {cat_labels.get(rt, rt)}"
+            lines.append(f"- {p['name']} (colorId {p['color_id']}){rt_label}: {p.get('description','')}")
     else:
         lines.append("- 登録なし")
 
@@ -1399,11 +1764,10 @@ async def update_legend_event(bot: CalendarBot, interaction: discord.Interaction
     description = "\n".join(lines)
     summary = "色/タグ 凡例"
 
-    legend_key = f"legend_event_id:{interaction.guild_id}"
+    legend_key = f"legend_event_id:{guild_id}"
     legend_event_id = bot.db_manager.get_setting(legend_key, "")
-    cal_mgr = bot.get_calendar_manager_for_guild(interaction.guild_id)
+    cal_mgr = bot.get_calendar_manager_for_guild(int(guild_id))
     if not cal_mgr:
-        await interaction.followup.send("❌ カレンダーが未認証です。`/カレンダー認証` を実行してください。", ephemeral=True)
         return
 
     if legend_event_id:
@@ -1425,3 +1789,12 @@ async def update_legend_event(bot: CalendarBot, interaction: discord.Interaction
             body=event_body
         ).execute()
         bot.db_manager.update_setting(legend_key, event['id'])
+
+
+async def update_legend_event(bot: CalendarBot, interaction: discord.Interaction):
+    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+    cal_mgr = bot.get_calendar_manager_for_guild(interaction.guild_id)
+    if not cal_mgr:
+        await interaction.followup.send("❌ カレンダーが未認証です。`/カレンダー認証` を実行してください。", ephemeral=True)
+        return
+    await _update_legend_event_by_guild(bot, guild_id)

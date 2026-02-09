@@ -114,6 +114,9 @@ def oauth_callback():
         authenticated_at=now,
     )
 
+    # 色セットアップ未完了フラグを設定
+    db_manager.mark_color_setup_pending(guild_id)
+
     return _oauth_success_html(), 200
 
 
@@ -122,8 +125,8 @@ def _oauth_success_html() -> str:
 <html lang="ja"><head><meta charset="UTF-8"><title>認証成功</title>
 <style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#2c2f33;color:#fff}
 .card{background:#36393f;padding:2rem 3rem;border-radius:12px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.3)}
-h1{color:#43b581;margin-bottom:.5rem}p{color:#b9bbbe}</style></head>
-<body><div class="card"><h1>認証成功</h1><p>Google カレンダーとの連携が完了しました。<br>このページを閉じて Discord に戻ってください。</p></div></body></html>"""
+h1{color:#43b581;margin-bottom:.5rem}p{color:#b9bbbe}.note{color:#faa61a;margin-top:1rem;font-weight:bold}</style></head>
+<body><div class="card"><h1>認証成功</h1><p>Google カレンダーとの連携が完了しました。<br>このページを閉じて Discord に戻ってください。</p><p class="note">次のステップ: Discord で <code>/色初期設定</code> を実行して、<br>繰り返しタイプごとのデフォルト色を設定してください。</p></div></body></html>"""
 
 
 def _oauth_error_html(message: str) -> str:
