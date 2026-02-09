@@ -656,6 +656,22 @@ def _auto_assign_color(db_manager: FirestoreManager, guild_id: str, recurrence: 
     return db_manager.get_color_preset_by_recurrence(guild_id, category)
 
 
+def _build_url_description_section(
+    x_url: Optional[str] = None,
+    vrc_group_url: Optional[str] = None,
+    official_url: Optional[str] = None,
+) -> str:
+    """Google Calendar description に追記するURL情報を構築"""
+    lines = []
+    if x_url:
+        lines.append(f"X: {x_url}")
+    if vrc_group_url:
+        lines.append(f"VRCグループ: {vrc_group_url}")
+    if official_url:
+        lines.append(f"公式サイト: {official_url}")
+    return "URLs:\n" + "\n".join(lines) if lines else ""
+
+
 def _event_data_to_parsed(event_data: Dict[str, Any], action: str) -> Dict[str, Any]:
     """会話で収集したevent_dataを既存のparsedフォーマットに変換する"""
     parsed = {"action": action}
@@ -669,7 +685,9 @@ def _event_data_to_parsed(event_data: Dict[str, Any], action: str) -> Dict[str, 
         "duration_minutes": "duration_minutes",
         "description": "description",
         "color_name": "color_name",
-        "urls": "urls",
+        "x_url": "x_url",
+        "vrc_group_url": "vrc_group_url",
+        "official_url": "official_url",
     }
     for src, dst in field_mapping.items():
         val = event_data.get(src)
@@ -1097,12 +1115,14 @@ async def _handle_add_event_direct(
             return f"❌ 色名「{color_name}」が登録されていません。"
         color_id = preset['color_id']
 
-    urls = parsed.get('urls', []) or []
+    x_url = parsed.get('x_url') or None
+    vrc_group_url = parsed.get('vrc_group_url') or None
+    official_url = parsed.get('official_url') or None
 
     description = parsed.get('description', '')
-    if urls:
-        url_lines = "\n".join(urls)
-        description = f"{description}\n\nURLs:\n{url_lines}".strip()
+    url_section = _build_url_description_section(x_url, vrc_group_url, official_url)
+    if url_section:
+        description = f"{description}\n\n{url_section}".strip()
 
     event_id = bot.db_manager.add_event(
         guild_id=guild_id,
@@ -1116,7 +1136,9 @@ async def _handle_add_event_direct(
         duration_minutes=parsed.get('duration_minutes', 60),
         description=description,
         color_name=color_name,
-        urls=urls,
+        x_url=x_url,
+        vrc_group_url=vrc_group_url,
+        official_url=official_url,
         discord_channel_id=str(channel_id),
         created_by=str(user_id)
     )
@@ -1145,7 +1167,9 @@ async def _handle_add_event_direct(
             extended_props={
                 "tags": json.dumps(tags, ensure_ascii=False),
                 "color_name": color_name or "",
-                "urls": json.dumps(urls, ensure_ascii=False)
+                "x_url": x_url or "",
+                "vrc_group_url": vrc_group_url or "",
+                "official_url": official_url or "",
             }
         )
 
@@ -1207,8 +1231,12 @@ async def _handle_edit_event_direct(
         if auto_color:
             updates['color_name'] = auto_color['name']
 
-    if 'urls' in parsed:
-        updates['urls'] = parsed.get('urls', [])
+    if 'x_url' in parsed:
+        updates['x_url'] = parsed.get('x_url') or None
+    if 'vrc_group_url' in parsed:
+        updates['vrc_group_url'] = parsed.get('vrc_group_url') or None
+    if 'official_url' in parsed:
+        updates['official_url'] = parsed.get('official_url') or None
 
     bot.db_manager.update_event(event['id'], updates)
 
@@ -1217,12 +1245,15 @@ async def _handle_edit_event_direct(
 
         google_updates = {}
         if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
-        if 'description' in parsed:
-            description = parsed['description']
-            urls = updates.get('urls') if 'urls' in updates else None
-            if urls:
-                url_lines = "\n".join(urls)
-                description = f"{description}\n\nURLs:\n{url_lines}".strip()
+        if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url')):
+            description = parsed.get('description') or event.get('description', '')
+            url_section = _build_url_description_section(
+                updates.get('x_url', event.get('x_url')),
+                updates.get('vrc_group_url', event.get('vrc_group_url')),
+                updates.get('official_url', event.get('official_url')),
+            )
+            if url_section:
+                description = f"{description}\n\n{url_section}".strip()
             google_updates['description'] = description
         if 'color_name' in updates:
             color_name = updates.get('color_name')
@@ -1242,8 +1273,12 @@ async def _handle_edit_event_direct(
                 bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
             if 'color_name' in updates:
                 bot_ext['color_name'] = updates.get('color_name') or ""
-            if 'urls' in updates:
-                bot_ext['urls'] = json.dumps(updates['urls'], ensure_ascii=False)
+            if 'x_url' in updates:
+                bot_ext['x_url'] = updates.get('x_url') or ""
+            if 'vrc_group_url' in updates:
+                bot_ext['vrc_group_url'] = updates.get('vrc_group_url') or ""
+            if 'official_url' in updates:
+                bot_ext['official_url'] = updates.get('official_url') or ""
             if bot_ext:
                 google_updates['extendedProperties'] = {'private': bot_ext}
             cal_mgr.update_events(google_event_ids, google_updates)
@@ -1295,13 +1330,15 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
             return f"❌ 色名「{color_name}」が登録されていません。"
         color_id = preset['color_id']
 
-    urls = parsed.get('urls', []) or []
+    x_url = parsed.get('x_url') or None
+    vrc_group_url = parsed.get('vrc_group_url') or None
+    official_url = parsed.get('official_url') or None
 
     # 説明欄にURLを追記
     description = parsed.get('description', '')
-    if urls:
-        url_lines = "\n".join(urls)
-        description = f"{description}\n\nURLs:\n{url_lines}".strip()
+    url_section = _build_url_description_section(x_url, vrc_group_url, official_url)
+    if url_section:
+        description = f"{description}\n\n{url_section}".strip()
 
     # データベースに保存
     event_id = bot.db_manager.add_event(
@@ -1316,7 +1353,9 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
         duration_minutes=parsed.get('duration_minutes', 60),
         description=description,
         color_name=color_name,
-        urls=urls,
+        x_url=x_url,
+        vrc_group_url=vrc_group_url,
+        official_url=official_url,
         discord_channel_id=str(interaction.channel_id),
         created_by=str(interaction.user.id)
     )
@@ -1348,7 +1387,9 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
             extended_props={
                 "tags": json.dumps(tags, ensure_ascii=False),
                 "color_name": color_name or "",
-                "urls": json.dumps(urls, ensure_ascii=False)
+                "x_url": x_url or "",
+                "vrc_group_url": vrc_group_url or "",
+                "official_url": official_url or "",
             }
         )
 
@@ -1412,8 +1453,12 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
         if auto_color:
             updates['color_name'] = auto_color['name']
 
-    if 'urls' in parsed:
-        updates['urls'] = parsed.get('urls', [])
+    if 'x_url' in parsed:
+        updates['x_url'] = parsed.get('x_url') or None
+    if 'vrc_group_url' in parsed:
+        updates['vrc_group_url'] = parsed.get('vrc_group_url') or None
+    if 'official_url' in parsed:
+        updates['official_url'] = parsed.get('official_url') or None
 
     bot.db_manager.update_event(event['id'], updates)
 
@@ -1423,12 +1468,15 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
 
         google_updates = {}
         if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
-        if 'description' in parsed:
-            description = parsed['description']
-            urls = updates.get('urls') if 'urls' in updates else None
-            if urls:
-                url_lines = "\n".join(urls)
-                description = f"{description}\n\nURLs:\n{url_lines}".strip()
+        if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url')):
+            description = parsed.get('description') or event.get('description', '')
+            url_section = _build_url_description_section(
+                updates.get('x_url', event.get('x_url')),
+                updates.get('vrc_group_url', event.get('vrc_group_url')),
+                updates.get('official_url', event.get('official_url')),
+            )
+            if url_section:
+                description = f"{description}\n\n{url_section}".strip()
             google_updates['description'] = description
         if 'color_name' in updates:
             color_name = updates.get('color_name')
@@ -1448,8 +1496,12 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
                 bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
             if 'color_name' in updates:
                 bot_ext['color_name'] = updates.get('color_name') or ""
-            if 'urls' in updates:
-                bot_ext['urls'] = json.dumps(updates['urls'], ensure_ascii=False)
+            if 'x_url' in updates:
+                bot_ext['x_url'] = updates.get('x_url') or ""
+            if 'vrc_group_url' in updates:
+                bot_ext['vrc_group_url'] = updates.get('vrc_group_url') or ""
+            if 'official_url' in updates:
+                bot_ext['official_url'] = updates.get('official_url') or ""
             if bot_ext:
                 google_updates['extendedProperties'] = {'private': bot_ext}
             cal_mgr.update_events(google_event_ids, google_updates)
@@ -1540,7 +1592,6 @@ async def confirm_action(interaction: discord.Interaction, title: str, descripti
 
 def build_event_summary(parsed: Dict[str, Any]) -> str:
     tags = parsed.get('tags', []) or []
-    urls = parsed.get('urls', []) or []
     nth = parsed.get('nth_weeks')
     nth_str = f"第{','.join(str(n) for n in nth)}週" if nth else ""
     weekdays = ['月', '火', '水', '木', '金', '土', '日']
@@ -1559,7 +1610,9 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
         f"所要時間: {parsed.get('duration_minutes', 60)}分\n"
         f"色: {color_display}\n"
         f"タグ: {', '.join(tags) if tags else 'なし'}\n"
-        f"URL: {', '.join(urls) if urls else 'なし'}\n"
+        f"X URL: {parsed.get('x_url') or 'なし'}\n"
+        f"VRCグループURL: {parsed.get('vrc_group_url') or 'なし'}\n"
+        f"公式サイトURL: {parsed.get('official_url') or 'なし'}\n"
         f"説明: {parsed.get('description', '')}"
     )
 

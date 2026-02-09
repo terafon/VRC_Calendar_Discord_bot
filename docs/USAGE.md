@@ -83,6 +83,14 @@ Bot: タグを設定しますか？
 
 ユーザー: 集会と初心者歓迎
 
+Bot: 以下のURLがあれば教えてください（全て任意です）。
+     1. X(旧Twitter)アカウントURL
+     2. VRCグループURL
+     3. 公式サイトURL
+     「なし」と入力するとスキップできます。
+
+ユーザー: Xはhttps://x.com/vrc_event、あとはなし
+
 Bot: (確認Embed表示)
      ┌────────────────────────────┐
      │ 予定追加の確認              │
@@ -92,6 +100,9 @@ Bot: (確認Embed表示)
      │ 時刻: 21:00                │
      │ 所要時間: 120分            │
      │ タグ: 集会, 初心者歓迎      │
+     │ X URL: https://x.com/vrc_event │
+     │ VRCグループURL: なし        │
+     │ 公式サイトURL: なし         │
      │ 色: セージ（自動割当）      │
      │                            │
      │ [確定] [修正] [キャンセル]  │
@@ -230,8 +241,10 @@ OAuth 2.0を使って、ユーザー自身のGoogleカレンダーに直接ア�
 
 ### URL付きの予定
 
+対話モードではタグの質問後に、X(旧Twitter)アカウントURL・VRCグループURL・公式サイトURLの3種を聞かれます。すべて任意で「なし」でスキップできます。
+
 ```
-/予定 毎週土曜21時にVRC集会、URLはhttps://vrchat.com/home/world/wrld_xxxxx
+/予定 毎週土曜21時にVRC集会、Xはhttps://x.com/vrc_event、VRCグループはhttps://vrc.group/example、公式サイトはhttps://example.com
 ```
 
 ---

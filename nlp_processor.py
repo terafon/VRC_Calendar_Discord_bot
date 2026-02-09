@@ -27,7 +27,9 @@ SYSTEM_PROMPT = """
   "duration_minutes": 60,
   "description": "説明",
   "color_name": "色名",
-  "urls": ["https://example.com", "https://twitter.com/..."],
+  "x_url": "https://x.com/... or null",
+  "vrc_group_url": "https://vrc.group/... or null",
+  "official_url": "https://example.com or null",
   "search_query": {
     "date_range": "today|this_week|next_week|this_month",
     "tags": ["タグ"],
@@ -103,7 +105,9 @@ VRChat上のイベント（集会、ワールド紹介、アバター試着会�
     "duration_minutes": 60 or null,
     "description": "収集済みの説明 or null",
     "color_name": "収集済みの色名 or null",
-    "urls": ["収集済みのURL"] or null
+    "x_url": "収集済みのXアカウントURL or null",
+    "vrc_group_url": "収集済みのVRCグループURL or null",
+    "official_url": "収集済みの公式サイトURL or null"
   }}
 }}
 
@@ -121,7 +125,9 @@ VRChat上のイベント（集会、ワールド紹介、アバター試着会�
     "duration_minutes": 60,
     "description": "説明",
     "color_name": "色名",
-    "urls": ["https://..."]
+    "x_url": "XアカウントURL or null",
+    "vrc_group_url": "VRCグループURL or null",
+    "official_url": "公式サイトURL or null"
   }},
   "search_query": {{
     "date_range": "today|this_week|next_week|this_month",
@@ -134,7 +140,15 @@ VRChat上のイベント（集会、ワールド紹介、アバター試着会�
 - 一度に1つの質問をしてください
 - 利用可能な選択肢がある場合は提示してください
 - フレンドリーで親しみやすい日本語を使ってください
-- 質問の順序: 開催頻度 → 曜日 → 時刻 → タグ（任意）
+- 質問の順序: 開催頻度 → 曜日 → 時刻 → タグ（任意） → URL（任意）
+
+# URL質問のルール
+- タグの質問の後に、以下の3種URLをまとめて1回の質問で聞いてください:
+  1. X(旧Twitter)アカウントURL
+  2. VRCグループURL
+  3. 公式サイトURL
+- 3つのURLは全て任意です。「なし」と回答された場合はnullにしてください。
+- action=add の場合、URLの質問が完了するまで status: complete にしないでください。
 
 # 色の割当ルール
 - 色は繰り返しタイプに基づいてシステムが自動で割り当てます。

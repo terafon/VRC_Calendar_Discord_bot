@@ -215,7 +215,9 @@ class ConversationManager:
 | duration_minutes | number | 所要時間（分） |
 | description | string | 説明 |
 | color_name | string | 色名（プリセット名） |
-| urls | string (JSON) | URL配列 |
+| x_url | string | X(旧Twitter)アカウントURL |
+| vrc_group_url | string | VRCグループURL |
+| official_url | string | 公式サイトURL |
 | google_calendar_events | string (JSON) | Googleカレンダーイベント情報 |
 | discord_channel_id | string | Discord通知先チャンネル |
 | created_by | string | 作成者のDiscord User ID |
@@ -320,7 +322,9 @@ Gemini 2.0 Flash APIを使用してユーザーメッセージを解析し、以
     "duration_minutes": 60 or null,
     "description": "収集済みの説明 or null",
     "color_name": "収集済みの色名 or null",
-    "urls": ["収集済みのURL"] or null
+    "x_url": "収集済みのXアカウントURL or null",
+    "vrc_group_url": "収集済みのVRCグループURL or null",
+    "official_url": "収集済みの公式サイトURL or null"
   }
 }
 ```
@@ -341,7 +345,9 @@ Gemini 2.0 Flash APIを使用してユーザーメッセージを解析し、以
     "duration_minutes": 60,
     "description": "説明",
     "color_name": "色名",
-    "urls": ["https://..."]
+    "x_url": "XアカウントURL or null",
+    "vrc_group_url": "VRCグループURL or null",
+    "official_url": "公式サイトURL or null"
   },
   "search_query": {
     "date_range": "today|this_week|next_week|this_month",
@@ -364,7 +370,7 @@ Gemini 2.0 Flash APIを使用してユーザーメッセージを解析し、以
 
 NLPプロセッサーはユーザーに色を質問しません。色は繰り返しタイプに基づいてシステムが自動で割り当てます。ユーザーが明示的に色を指定した場合のみ、その色名が `color_name` に設定されます。
 
-質問の順序: 開催頻度 → 曜日 → 時刻 → タグ（任意）
+質問の順序: 開催頻度 → 曜日 → 時刻 → タグ（任意） → URL（任意: X / VRCグループ / 公式サイト）
 
 ### 7.4 タグのグループ別選択ルール
 
