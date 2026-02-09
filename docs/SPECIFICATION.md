@@ -12,7 +12,10 @@ VRC Calendar Discord Botは、Discord上でVRChatイベント（集会、ワー�
 |------|------|
 | 予定追加 | 自然言語で予定を登録（Googleカレンダーに同期） |
 | 対話型情報収集 | 不足情報をスレッド内でGeminiとの対話で補完 |
-| 予定編集 | 既存予定の時刻・内容を変更 |
+| 色の自動割当 | 繰り返しタイプ（毎週/隔週/月1回/第n週/不定期）に応じて色を自動設定 |
+| 色初期設定ウィザード | OAuth認証後に `/色初期設定` で5カテゴリの色を一括設定 |
+| タググループ別選択 | タグをグループごとに分類し、各グループから1つずつ選択 |
+| 予定編集 | 既存予定の時刻・内容を変更（繰り返し変更時に色を自動再割当） |
 | 予定削除 | 予定を削除（論理削除） |
 | 予定検索 | 期間・タグ・名前で予定を検索 |
 | 今週の予定 | 今週の予定一覧を表示 |
@@ -53,8 +56,8 @@ VRC Calendar Discord Botは、Discord上でVRChatイベント（集会、ワー�
 │  Google Cloud Platform                                          │
 │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────────┐ │
 │  │ Calendar API │ │ Gemini API   │ │ Cloud Storage (backup)   │ │
-│  │              │ │ (マルチターン│ │                          │ │
-│  │              │ │  会話対応)   │ │                          │ │
+│  │              │ │ (2.0 Flash   │ │                          │ │
+│  │              │ │ マルチターン)│ │                          │ │
 │  └──────────────┘ └──────────────┘ └──────────────────────────┘ │
 │  ┌──────────────┐ ┌──────────────┐                              │
 │  │ Firestore    │ │ Secret Mgr   │                              │
@@ -155,16 +158,48 @@ class ConversationManager:
 │     └── { guild_id, user_id, created_at }
 │
 └── guilds/{guild_id}/                         # サーバーごとのデータ
+      │   └── { pending_color_setup, default_colors_initialized, ... }
       ├── events/{event_id}                    # 予定マスター
       ├── irregular_events/{doc_id}            # 不定期予定の個別日時
-      ├── color_presets/{name}                 # 色プリセット
+      ├── color_presets/{name}                 # 色プリセット（recurrence_type対応）
       ├── tag_groups/{group_id}                # タググループ
       ├── tags/{tag_id}                        # タグ
       ├── guild_settings/config                # サーバー設定
       └── oauth_tokens/google                  # OAuthトークン
 ```
 
-### 5.2 events ドキュメント（予定マスター）
+### 5.2 guilds ドキュメント（サーバー設定）
+
+パス: `guilds/{guild_id}`
+
+| フィールド | 型 | 説明 |
+|----------|------|------|
+| pending_color_setup | boolean | 色初期設定が未完了の場合 true |
+| default_colors_initialized | boolean | 色初期設定が完了済みの場合 true |
+
+### 5.3 color_presets ドキュメント
+
+パス: `guilds/{guild_id}/color_presets/{name}`
+
+| フィールド | 型 | 説明 |
+|----------|------|------|
+| name | string | 色プリセット名 |
+| color_id | string | Google Calendar の colorId（1-11） |
+| description | string | 説明 |
+| recurrence_type | string | 関連付けられた繰り返しタイプ（weekly/biweekly/monthly/nth_week/irregular）|
+| is_auto_generated | boolean | セットアップウィザードで自動生成された場合 true |
+
+#### 色カテゴリと繰り返しタイプの対応
+
+| カテゴリ | recurrence_type | 判定条件 |
+|---------|----------------|---------|
+| 毎週 | weekly | `recurrence == "weekly"` |
+| 隔週 | biweekly | `recurrence == "biweekly"` |
+| 月1回 | monthly | `recurrence == "nth_week" and len(nth_weeks) == 1` |
+| 第n週 | nth_week | `recurrence == "nth_week" and len(nth_weeks) >= 2` |
+| 不定期 | irregular | `recurrence == "irregular"` |
+
+### 5.4 events ドキュメント（予定マスター）
 
 | フィールド | 型 | 説明 |
 |----------|------|------|
@@ -218,7 +253,8 @@ class ConversationManager:
 
 | コマンド | パラメータ | 説明 |
 |---------|-----------|------|
-| `/色一覧` | なし | 色プリセットとGoogleカラーIDを表示 |
+| `/色初期設定` | なし | 繰り返しタイプごとのデフォルト色を一括設定（manage_guild権限必要）|
+| `/色一覧` | なし | 色プリセットとGoogleカラーIDを表示（繰り返しタイプ表示付き） |
 | `/色追加` | 名前, color_id, 説明 | 色プリセットを追加/更新 |
 | `/色削除` | 名前 | 色プリセットを削除 |
 | `/タググループ一覧` | なし | タググループとタグの一覧 |
@@ -261,7 +297,7 @@ Google OAuth 認証コールバック。
 
 ### 7.1 NLPスキーマ（マルチターン会話対応）
 
-Gemini APIを使用してユーザーメッセージを解析し、以下のJSON形式で返却：
+Gemini 2.0 Flash APIを使用してユーザーメッセージを解析し、以下のJSON形式で返却：
 
 #### 情報が不足している場合
 
@@ -320,7 +356,17 @@ Gemini APIを使用してユーザーメッセージを解析し、以下のJSON
 | weekday | recurrence が irregular 以外の場合は必須 |
 | time | 常に必須 |
 
-### 7.3 曜日マッピング
+### 7.3 色の自動割当ルール
+
+NLPプロセッサーはユーザーに色を質問しません。色は繰り返しタイプに基づいてシステムが自動で割り当てます。ユーザーが明示的に色を指定した場合のみ、その色名が `color_name` に設定されます。
+
+質問の順序: 開催頻度 → 曜日 → 時刻 → タグ（任意）
+
+### 7.4 タグのグループ別選択ルール
+
+タグはグループごとに分類されています。各グループから最も適切なタグを1つ選択し、`tags` 配列にまとめます。タグが未登録のグループは無視されます。
+
+### 7.5 曜日マッピング
 
 | 曜日 | 値 |
 |------|-----|
@@ -346,8 +392,10 @@ OAuth 2.0 認証を使用します。各サーバーの管理者が `/カレン�
 3. ユーザーがブラウザで Google認証 → カレンダーアクセスを許可
 4. Google が Flask の /oauth/callback にリダイレクト
 5. コールバックで state 検証 → コードをトークンに交換 → Firestore に保存
-6. ブラウザに「認証成功」ページを表示
-7. 以降、Bot はそのトークンでユーザーのカレンダーを操作
+6. 色セットアップ未完了フラグ（pending_color_setup）を設定
+7. ブラウザに「認証成功」ページを表示（/色初期設定 の実行を案内）
+8. ユーザーが Discord で /色初期設定 を実行し、繰り返しタイプごとの色を設定
+9. 以降、Bot はそのトークンでユーザーのカレンダーを操作し、色を自動割当
 ```
 
 ### 8.3 スコープ
@@ -413,7 +461,50 @@ https://www.googleapis.com/auth/calendar
 - **タイムアウト**: 5分間操作がないと自動終了
 - **同時セッション**: 1ユーザー1スレッドの想定（複数スレッドでの同時操作は非推奨）
 
-## 11. 将来の拡張予定
+## 11. 色自動割当アーキテクチャ
+
+### 11.1 色自動割当フロー
+
+```
+予定追加（/予定 コマンド or スレッド内対話）
+    │
+    ▼
+recurrence + nth_weeks から色カテゴリを決定
+（_resolve_color_category）
+    │
+    ▼
+色カテゴリに対応する色プリセットをFirestoreから取得
+（_auto_assign_color → get_color_preset_by_recurrence）
+    │
+    ├── プリセットあり → 色を自動割当（確認画面に「（自動割当）」表示）
+    │
+    └── プリセットなし → 新色追加ダイアログを表示
+         ├── 追加を選択 → colorId選択 → プリセット登録 → 確認フローへ
+         └── スキップ → 色なしで確認フローへ
+```
+
+### 11.2 色セットアップウィザード（/色初期設定）
+
+OAuth認証後に実行する初期設定コマンドです。5つの色カテゴリ（毎週/隔週/月1回/第n週/不定期）それぞれにGoogle CalendarのcolorId（1-11）を割り当てます。
+
+```
+/色初期設定 実行
+    │
+    ▼
+SelectMenu で各カテゴリの色を選択（5カテゴリ分）
+    │
+    ▼
+色プリセットを一括登録（recurrence_type + is_auto_generated=True）
+    │
+    ▼
+凡例イベントを更新
+```
+
+### 11.3 予定編集時の色再割当
+
+予定の繰り返しパターン（recurrence）が変更された場合、新しい繰り返しタイプに対応する色が自動的に再割当されます。ユーザーが明示的に色を変更指定している場合は、その色が優先されます。
+
+## 12. 将来の拡張予定
 
 - [ ] リマインダー機能
 - [ ] iCal形式でのエクスポート
