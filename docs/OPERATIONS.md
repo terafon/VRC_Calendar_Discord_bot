@@ -223,6 +223,7 @@ sudo systemctl restart vrc-calendar-bot
 | OAuth認証で「redirect_uri_mismatch」 | リダイレクトURI不一致 | GCPコンソールの承認済みURIと`OAUTH_REDIRECT_URI`が完全一致しているか確認 |
 | OAuth認証で「access_denied」 | 同意画面のテストユーザー未追加 | OAuth同意画面でテストユーザーにGoogleアカウントを追加 |
 | OAuth認証後にカレンダー操作エラー | トークン期限切れ | `/カレンダー認証` で再認証するか、Google側でアクセスを取消していないか確認 |
+| `/予定` で「色初期設定を実行してください」と表示される | 色初期設定が未完了 | `/色初期設定` を実行して繰り返しタイプごとのデフォルト色を設定してください |
 
 ### 旧バージョン（SQLite）からの移行
 

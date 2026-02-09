@@ -230,14 +230,25 @@ class FirestoreManager:
 
     # ---- 色プリセット ----
 
-    def add_color_preset(self, guild_id: str, name: str, color_id: str, description: str = ""):
-        """色プリセットを追加"""
-        self._guild_ref(guild_id).collection("color_presets").document(name).set({
+    def add_color_preset(self, guild_id: str, name: str, color_id: str, description: str = "",
+                         recurrence_type: Optional[str] = None, is_auto_generated: bool = False):
+        """色プリセットを追加
+
+        Args:
+            recurrence_type: "weekly" | "biweekly" | "monthly" | "nth_week" | "irregular" | None
+            is_auto_generated: True = セットアップウィザードで自動生成
+        """
+        data = {
             "guild_id": guild_id,
             "name": name,
             "color_id": color_id,
             "description": description,
-        })
+        }
+        if recurrence_type is not None:
+            data["recurrence_type"] = recurrence_type
+        if is_auto_generated:
+            data["is_auto_generated"] = True
+        self._guild_ref(guild_id).collection("color_presets").document(name).set(data)
 
     def list_color_presets(self, guild_id: str) -> List[dict]:
         """色プリセット一覧"""
@@ -253,6 +264,62 @@ class FirestoreManager:
         """色プリセットを取得"""
         doc = self._guild_ref(guild_id).collection("color_presets").document(name).get()
         return doc.to_dict() if doc.exists else None
+
+    def get_color_preset_by_recurrence(self, guild_id: str, recurrence_type: str) -> Optional[dict]:
+        """繰り返しタイプに対応する色プリセットを取得"""
+        docs = (
+            self._guild_ref(guild_id)
+            .collection("color_presets")
+            .where(filter=firestore.FieldFilter("recurrence_type", "==", recurrence_type))
+            .limit(1)
+            .get()
+        )
+        for doc in docs:
+            return doc.to_dict()
+        return None
+
+    def initialize_default_color_presets(self, guild_id: str, presets_data: list) -> bool:
+        """色プリセットを一括登録する（セットアップウィザード用）
+
+        Args:
+            presets_data: [{"name": "色名", "color_id": "9", "recurrence_type": "weekly", "description": "説明"}, ...]
+        """
+        batch = self.db.batch()
+        for preset in presets_data:
+            ref = self._guild_ref(guild_id).collection("color_presets").document(preset["name"])
+            batch.set(ref, {
+                "guild_id": guild_id,
+                "name": preset["name"],
+                "color_id": preset["color_id"],
+                "recurrence_type": preset["recurrence_type"],
+                "description": preset.get("description", ""),
+                "is_auto_generated": True,
+            })
+        batch.commit()
+
+        # セットアップ完了フラグを設定
+        self.mark_color_setup_done(guild_id)
+        return True
+
+    def is_color_setup_pending(self, guild_id: str) -> bool:
+        """色セットアップが未完了かどうかを確認"""
+        doc = self._guild_ref(guild_id).get()
+        if doc.exists:
+            return doc.to_dict().get("pending_color_setup", False)
+        return False
+
+    def mark_color_setup_done(self, guild_id: str):
+        """色セットアップ完了フラグを設定"""
+        self._guild_ref(guild_id).set({
+            "pending_color_setup": False,
+            "default_colors_initialized": True,
+        }, merge=True)
+
+    def mark_color_setup_pending(self, guild_id: str):
+        """色セットアップ未完了フラグを設定"""
+        self._guild_ref(guild_id).set({
+            "pending_color_setup": True,
+        }, merge=True)
 
     def delete_color_preset(self, guild_id: str, name: str):
         """色プリセットを削除"""
