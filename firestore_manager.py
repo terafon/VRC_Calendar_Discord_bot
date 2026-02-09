@@ -60,9 +60,11 @@ class FirestoreManager:
         duration_minutes: int,
         description: str,
         color_name: Optional[str],
-        urls: Optional[List[str]],
-        discord_channel_id: str,
-        created_by: str,
+        x_url: Optional[str] = None,
+        vrc_group_url: Optional[str] = None,
+        official_url: Optional[str] = None,
+        discord_channel_id: str = "",
+        created_by: str = "",
     ) -> int:
         """予定を追加"""
         event_id = self._next_id("events")
@@ -81,7 +83,9 @@ class FirestoreManager:
             "duration_minutes": duration_minutes,
             "description": description,
             "color_name": color_name,
-            "urls": json.dumps(urls, ensure_ascii=False) if urls else None,
+            "x_url": x_url,
+            "vrc_group_url": vrc_group_url,
+            "official_url": official_url,
             "google_calendar_events": None,
             "discord_channel_id": discord_channel_id,
             "created_by": created_by,

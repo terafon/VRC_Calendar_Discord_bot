@@ -44,6 +44,28 @@ GOOGLE_CALENDAR_COLORS = {
     "11": {"name": "トマト", "hex": "#D50000"},
 }
 
+# colorId → 絵文字マッピング（SelectMenuやパレット表示用）
+COLOR_EMOJI = {
+    "1": "🪻", "2": "🌿", "3": "🍇", "4": "🌸",
+    "5": "🍌", "6": "🍊", "7": "🦚", "8": "✏️",
+    "9": "🫐", "10": "🌿", "11": "🍅",
+}
+
+
+def _create_color_palette_embeds() -> list:
+    """Google Calendar色パレットのEmbed一覧を作成（各色のカラーバーで実際の色を表示）"""
+    embeds = []
+    for cid, info in GOOGLE_CALENDAR_COLORS.items():
+        hex_int = int(info['hex'].lstrip('#'), 16)
+        emoji = COLOR_EMOJI.get(cid, "")
+        embed = discord.Embed(
+            description=f"{emoji} **{cid}** {info['name']}",
+            color=discord.Color(hex_int),
+        )
+        embeds.append(embed)
+    return embeds
+
+
 CANCEL_KEYWORDS = {"キャンセル", "やめる", "やめ", "中止", "取り消し", "cancel", "quit", "exit"}
 
 
@@ -172,8 +194,8 @@ def setup_commands(bot: CalendarBot):
             if bot.db_manager.is_color_setup_pending(guild_id):
                 await interaction.followup.send(
                     "⚠️ 色の初期設定がまだ完了していません。\n"
-                    "先に `/色初期設定` コマンドを実行して、繰り返しタイプごとのデフォルト色を設定してください。\n"
-                    "スキップする場合は、管理者が `/色初期設定` を実行してください。",
+                    "先に `/色 初期設定` コマンドを実行して、繰り返しタイプごとのデフォルト色を設定してください。\n"
+                    "スキップする場合は、管理者が `/色 初期設定` を実行してください。",
                     ephemeral=True
                 )
                 return
@@ -379,17 +401,85 @@ def setup_commands(bot: CalendarBot):
         embed = create_help_embed()
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @bot.tree.command(name="色一覧", description="色プリセットとGoogleカレンダー色パレットを表示します")
+    # ---- 色管理グループ ----
+    color_group = app_commands.Group(name="色", description="色プリセットの管理")
+
+    @color_group.command(name="初期設定", description="繰り返しタイプごとのデフォルト色を設定します")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def color_setup_command(interaction: discord.Interaction):
+        """色セットアップウィザード"""
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
+        # Google Calendar色パレットをEmbed一覧で表示（カラーバーで実際の色が見える）
+        palette_embeds = _create_color_palette_embeds()
+
+        # 色パレット表示（1メッセージ最大10 Embed → 1-10を先に送信）
+        await interaction.followup.send(
+            content="🎨 **Google Calendar 色パレット**",
+            embeds=palette_embeds[:10],
+            ephemeral=True,
+        )
+
+        # 残りの色(11) + ウィザード本体
+        wizard_embed = discord.Embed(
+            title="🎨 色初期設定ウィザード",
+            description=(
+                "繰り返しタイプごとにGoogleカレンダーの色を設定します。\n"
+                "上の色パレットを参考に、各カテゴリに対して色を選択してください。"
+            ),
+            color=discord.Color.blue(),
+        )
+        view = ColorSetupView(interaction.user.id, guild_id, bot)
+        await interaction.followup.send(
+            embeds=[palette_embeds[10], wizard_embed],
+            view=view,
+            ephemeral=True,
+        )
+
+    @color_group.command(name="一覧", description="色プリセットの一覧を表示します")
     async def color_list_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
         presets = bot.db_manager.list_color_presets(guild_id)
-        cal_mgr = bot.get_calendar_manager_for_guild(interaction.guild_id)
-        palette = cal_mgr.get_color_palette() if cal_mgr else {}
-        embed = create_color_list_embed(presets, palette)
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @bot.tree.command(name="色追加", description="色プリセットを追加/更新します")
+        if not presets:
+            embed = discord.Embed(
+                title="🎨 色プリセット",
+                description="色プリセットが登録されていません。\n`/色 初期設定` で繰り返しタイプごとのデフォルト色を設定してください。",
+                color=discord.Color.blue(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        cat_labels = {c["key"]: c["label"] for c in COLOR_CATEGORIES}
+        embeds = []
+        for p in presets:
+            color_info = GOOGLE_CALENDAR_COLORS.get(p['color_id'], {})
+            hex_int = int(color_info.get('hex', '#808080').lstrip('#'), 16)
+            emoji = COLOR_EMOJI.get(p['color_id'], "")
+            rt = p.get('recurrence_type')
+            rt_label = f" [→ {cat_labels.get(rt, rt)}]" if rt else ""
+
+            embed = discord.Embed(
+                description=f"{emoji} **{p['name']}** (colorId {p['color_id']}: {color_info.get('name', '?')}){rt_label}",
+                color=discord.Color(hex_int),
+            )
+            embeds.append(embed)
+
+        # 10 embed/message の制限を考慮して分割送信
+        for i in range(0, len(embeds), 10):
+            chunk = embeds[i:i+10]
+            if i == 0:
+                await interaction.followup.send(
+                    content="🎨 **登録済み色プリセット**",
+                    embeds=chunk,
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(embeds=chunk, ephemeral=True)
+
+    @color_group.command(name="追加", description="色プリセットを追加/更新します")
     @app_commands.describe(名前="色名", color_id="GoogleカレンダーのcolorId", 説明="色の説明")
     async def color_add_command(interaction: discord.Interaction, 名前: str, color_id: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
@@ -398,7 +488,7 @@ def setup_commands(bot: CalendarBot):
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ 色プリセット「{名前}」を設定しました。", ephemeral=True)
 
-    @bot.tree.command(name="色削除", description="色プリセットを削除します")
+    @color_group.command(name="削除", description="色プリセットを削除します")
     @app_commands.describe(名前="色名")
     async def color_delete_command(interaction: discord.Interaction, 名前: str):
         await interaction.response.defer(ephemeral=True)
@@ -407,7 +497,12 @@ def setup_commands(bot: CalendarBot):
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ 色プリセット「{名前}」を削除しました。", ephemeral=True)
 
-    @bot.tree.command(name="タググループ一覧", description="タググループを表示します")
+    bot.tree.add_command(color_group)
+
+    # ---- タグ管理グループ ----
+    tag_group = app_commands.Group(name="タグ", description="タグの管理")
+
+    @tag_group.command(name="一覧", description="タググループとタグを表示します")
     async def tag_group_list_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
@@ -416,7 +511,7 @@ def setup_commands(bot: CalendarBot):
         embed = create_tag_group_list_embed(groups, tags)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @bot.tree.command(name="タググループ追加", description="タググループを追加します（最大3つ）")
+    @tag_group.command(name="グループ追加", description="タググループを追加します（最大3つ）")
     @app_commands.describe(名前="グループ名", 説明="グループの説明")
     async def tag_group_add_command(interaction: discord.Interaction, 名前: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
@@ -425,7 +520,7 @@ def setup_commands(bot: CalendarBot):
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タググループ「{名前}」を追加しました。", ephemeral=True)
 
-    @bot.tree.command(name="タググループ削除", description="タググループを削除します")
+    @tag_group.command(name="グループ削除", description="タググループを削除します")
     @app_commands.describe(id="グループID")
     async def tag_group_delete_command(interaction: discord.Interaction, id: int):
         await interaction.response.defer(ephemeral=True)
@@ -434,7 +529,7 @@ def setup_commands(bot: CalendarBot):
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タググループID {id} を削除しました。", ephemeral=True)
 
-    @bot.tree.command(name="タグ追加", description="タグを追加/更新します")
+    @tag_group.command(name="追加", description="タグを追加/更新します")
     @app_commands.describe(group_id="グループID", 名前="タグ名", 説明="タグの説明")
     async def tag_add_command(interaction: discord.Interaction, group_id: int, 名前: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
@@ -443,7 +538,7 @@ def setup_commands(bot: CalendarBot):
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タグ「{名前}」を追加しました。", ephemeral=True)
 
-    @bot.tree.command(name="タグ削除", description="タグを削除します")
+    @tag_group.command(name="削除", description="タグを削除します")
     @app_commands.describe(group_id="グループID", 名前="タグ名")
     async def tag_delete_command(interaction: discord.Interaction, group_id: int, 名前: str):
         await interaction.response.defer(ephemeral=True)
@@ -452,52 +547,15 @@ def setup_commands(bot: CalendarBot):
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タグ「{名前}」を削除しました。", ephemeral=True)
 
-    @bot.tree.command(name="凡例更新", description="色/タグの凡例イベントを更新します")
-    async def legend_update_command(interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        await update_legend_event(bot, interaction)
-        await interaction.followup.send("✅ 凡例イベントを更新しました。", ephemeral=True)
+    bot.tree.add_command(tag_group)
 
-    @bot.tree.command(name="色初期設定", description="繰り返しタイプごとのデフォルト色を設定します")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def color_setup_command(interaction: discord.Interaction):
-        """色セットアップウィザード"""
-        await interaction.response.defer(ephemeral=True)
-        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+    # ---- カレンダー管理グループ ----
+    calendar_group = app_commands.Group(
+        name="カレンダー", description="カレンダーの管理",
+        default_permissions=discord.Permissions(manage_guild=True),
+    )
 
-        # Google Calendar色パレットを表示
-        color_options_text = "\n".join(
-            f"`{cid}`: {info['name']} ({info['hex']})"
-            for cid, info in GOOGLE_CALENDAR_COLORS.items()
-        )
-
-        embed = discord.Embed(
-            title="🎨 色初期設定ウィザード",
-            description=(
-                "繰り返しタイプごとにGoogleカレンダーの色を設定します。\n"
-                "各カテゴリに対してcolorIdを選択してください。\n\n"
-                f"**利用可能な色:**\n{color_options_text}"
-            ),
-            color=discord.Color.blue(),
-        )
-        view = ColorSetupView(interaction.user.id, guild_id, bot)
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-    @bot.tree.command(name="カレンダー設定", description="使用するカレンダーIDを設定します")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.describe(calendar_id="GoogleカレンダーID（例: abc123@group.calendar.google.com）")
-    async def calendar_set_command(interaction: discord.Interaction, calendar_id: str):
-        await interaction.response.defer(ephemeral=True)
-        guild_id = str(interaction.guild_id)
-        oauth_tokens = bot.db_manager.get_oauth_tokens(guild_id)
-        if not oauth_tokens:
-            await interaction.followup.send("❌ OAuth 認証がされていません。先に `/カレンダー認証` を実行してください。", ephemeral=True)
-            return
-        bot.db_manager.update_oauth_calendar_id(guild_id, calendar_id)
-        await interaction.followup.send(f"✅ カレンダーIDを `{calendar_id}` に設定しました。", ephemeral=True)
-
-    @bot.tree.command(name="カレンダー認証", description="Google OAuth認証でカレンダーを連携します")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @calendar_group.command(name="認証", description="Google OAuth認証でカレンダーを連携します")
     async def calendar_oauth_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         if not bot.oauth_handler:
@@ -523,8 +581,7 @@ def setup_commands(bot: CalendarBot):
         embed.set_footer(text="このリンクは一度だけ使用できます")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @bot.tree.command(name="カレンダー認証解除", description="Google OAuth認証を解除します")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @calendar_group.command(name="認証解除", description="Google OAuth認証を解除します")
     async def calendar_oauth_revoke_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id)
@@ -536,8 +593,7 @@ def setup_commands(bot: CalendarBot):
         bot.db_manager.delete_oauth_tokens(guild_id)
         await interaction.followup.send("✅ Google OAuth 認証を解除しました。", ephemeral=True)
 
-    @bot.tree.command(name="カレンダー認証状態", description="カレンダーの認証状態を表示します")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @calendar_group.command(name="認証状態", description="カレンダーの認証状態を表示します")
     async def calendar_oauth_status_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id)
@@ -555,9 +611,23 @@ def setup_commands(bot: CalendarBot):
             embed.add_field(name="カレンダーID", value=calendar_id, inline=False)
         else:
             embed.add_field(name="状態", value="未認証", inline=False)
-            embed.add_field(name="説明", value="`/カレンダー認証` を実行して OAuth 認証を行ってください。", inline=False)
+            embed.add_field(name="説明", value="`/カレンダー 認証` を実行して OAuth 認証を行ってください。", inline=False)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @calendar_group.command(name="設定", description="使用するカレンダーIDを設定します")
+    @app_commands.describe(calendar_id="GoogleカレンダーID（例: abc123@group.calendar.google.com）")
+    async def calendar_set_command(interaction: discord.Interaction, calendar_id: str):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id)
+        oauth_tokens = bot.db_manager.get_oauth_tokens(guild_id)
+        if not oauth_tokens:
+            await interaction.followup.send("❌ OAuth 認証がされていません。先に `/カレンダー 認証` を実行してください。", ephemeral=True)
+            return
+        bot.db_manager.update_oauth_calendar_id(guild_id, calendar_id)
+        await interaction.followup.send(f"✅ カレンダーIDを `{calendar_id}` に設定しました。", ephemeral=True)
+
+    bot.tree.add_command(calendar_group)
 
 
 # ---- ヘルパー関数 ----
@@ -586,6 +656,22 @@ def _auto_assign_color(db_manager: FirestoreManager, guild_id: str, recurrence: 
     return db_manager.get_color_preset_by_recurrence(guild_id, category)
 
 
+def _build_url_description_section(
+    x_url: Optional[str] = None,
+    vrc_group_url: Optional[str] = None,
+    official_url: Optional[str] = None,
+) -> str:
+    """Google Calendar description に追記するURL情報を構築"""
+    lines = []
+    if x_url:
+        lines.append(f"X: {x_url}")
+    if vrc_group_url:
+        lines.append(f"VRCグループ: {vrc_group_url}")
+    if official_url:
+        lines.append(f"公式サイト: {official_url}")
+    return "URLs:\n" + "\n".join(lines) if lines else ""
+
+
 def _event_data_to_parsed(event_data: Dict[str, Any], action: str) -> Dict[str, Any]:
     """会話で収集したevent_dataを既存のparsedフォーマットに変換する"""
     parsed = {"action": action}
@@ -599,7 +685,9 @@ def _event_data_to_parsed(event_data: Dict[str, Any], action: str) -> Dict[str, 
         "duration_minutes": "duration_minutes",
         "description": "description",
         "color_name": "color_name",
-        "urls": "urls",
+        "x_url": "x_url",
+        "vrc_group_url": "vrc_group_url",
+        "official_url": "official_url",
     }
     for src, dst in field_mapping.items():
         val = event_data.get(src)
@@ -852,6 +940,7 @@ class ColorSetupView(discord.ui.View):
                 label=f"{cid}: {info['name']}",
                 value=cid,
                 description=info['hex'],
+                emoji=COLOR_EMOJI.get(cid),
             )
             for cid, info in GOOGLE_CALENDAR_COLORS.items()
         ]
@@ -904,7 +993,7 @@ class ColorSetupView(discord.ui.View):
         # セットアップ完了フラグだけ設定
         self.bot.db_manager.mark_color_setup_done(self.guild_id)
         await interaction.response.edit_message(
-            content="⏭️ 色初期設定をスキップしました。後から `/色初期設定` で設定できます。",
+            content="⏭️ 色初期設定をスキップしました。後から `/色 初期設定` で設定できます。",
             view=None,
         )
         self.stop()
@@ -980,6 +1069,7 @@ class ColorSelectForEventView(discord.ui.View):
                 label=f"{cid}: {info['name']}",
                 value=cid,
                 description=info['hex'],
+                emoji=COLOR_EMOJI.get(cid),
             )
             for cid, info in GOOGLE_CALENDAR_COLORS.items()
         ]
@@ -1025,12 +1115,16 @@ async def _handle_add_event_direct(
             return f"❌ 色名「{color_name}」が登録されていません。"
         color_id = preset['color_id']
 
-    urls = parsed.get('urls', []) or []
+    x_url = parsed.get('x_url') or None
+    vrc_group_url = parsed.get('vrc_group_url') or None
+    official_url = parsed.get('official_url') or None
 
-    description = parsed.get('description', '')
-    if urls:
-        url_lines = "\n".join(urls)
-        description = f"{description}\n\nURLs:\n{url_lines}".strip()
+    raw_description = parsed.get('description', '')
+    # Google Calendar用にURL情報を追記した説明文を構築
+    cal_description = raw_description
+    url_section = _build_url_description_section(x_url, vrc_group_url, official_url)
+    if url_section:
+        cal_description = f"{raw_description}\n\n{url_section}".strip()
 
     event_id = bot.db_manager.add_event(
         guild_id=guild_id,
@@ -1042,16 +1136,18 @@ async def _handle_add_event_direct(
         time=parsed.get('time'),
         weekday=parsed.get('weekday'),
         duration_minutes=parsed.get('duration_minutes', 60),
-        description=description,
+        description=raw_description,
         color_name=color_name,
-        urls=urls,
+        x_url=x_url,
+        vrc_group_url=vrc_group_url,
+        official_url=official_url,
         discord_channel_id=str(channel_id),
         created_by=str(user_id)
     )
 
     cal_mgr = bot.get_calendar_manager_for_guild(int(guild_id))
     if not cal_mgr:
-        return "❌ カレンダーが未認証です。`/カレンダー認証` を実行してください。"
+        return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
 
     if parsed['recurrence'] != 'irregular':
         dates = RecurrenceCalculator.calculate_dates(
@@ -1067,13 +1163,15 @@ async def _handle_add_event_direct(
             dates=dates,
             time_str=parsed['time'],
             duration_minutes=parsed.get('duration_minutes', 60),
-            description=description,
+            description=cal_description,
             tags=tags,
             color_id=color_id,
             extended_props={
                 "tags": json.dumps(tags, ensure_ascii=False),
                 "color_name": color_name or "",
-                "urls": json.dumps(urls, ensure_ascii=False)
+                "x_url": x_url or "",
+                "vrc_group_url": vrc_group_url or "",
+                "official_url": official_url or "",
             }
         )
 
@@ -1135,8 +1233,12 @@ async def _handle_edit_event_direct(
         if auto_color:
             updates['color_name'] = auto_color['name']
 
-    if 'urls' in parsed:
-        updates['urls'] = parsed.get('urls', [])
+    if 'x_url' in parsed:
+        updates['x_url'] = parsed.get('x_url') or None
+    if 'vrc_group_url' in parsed:
+        updates['vrc_group_url'] = parsed.get('vrc_group_url') or None
+    if 'official_url' in parsed:
+        updates['official_url'] = parsed.get('official_url') or None
 
     bot.db_manager.update_event(event['id'], updates)
 
@@ -1145,13 +1247,18 @@ async def _handle_edit_event_direct(
 
         google_updates = {}
         if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
-        if 'description' in parsed:
-            description = parsed['description']
-            urls = updates.get('urls') if 'urls' in updates else None
-            if urls:
-                url_lines = "\n".join(urls)
-                description = f"{description}\n\nURLs:\n{url_lines}".strip()
-            google_updates['description'] = description
+        if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url')):
+            # Firestoreのdescriptionは生テキスト（URL情報を含まない）
+            raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
+            url_section = _build_url_description_section(
+                updates.get('x_url', event.get('x_url')),
+                updates.get('vrc_group_url', event.get('vrc_group_url')),
+                updates.get('official_url', event.get('official_url')),
+            )
+            cal_description = raw_desc
+            if url_section:
+                cal_description = f"{raw_desc}\n\n{url_section}".strip()
+            google_updates['description'] = cal_description
         if 'color_name' in updates:
             color_name = updates.get('color_name')
             color_id = None
@@ -1164,14 +1271,18 @@ async def _handle_edit_event_direct(
         if google_updates:
             cal_mgr = bot.get_calendar_manager_for_guild(int(guild_id))
             if not cal_mgr:
-                return "❌ カレンダーが未認証です。`/カレンダー認証` を実行してください。"
+                return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
             bot_ext = {}
             if 'tags' in updates:
                 bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
             if 'color_name' in updates:
                 bot_ext['color_name'] = updates.get('color_name') or ""
-            if 'urls' in updates:
-                bot_ext['urls'] = json.dumps(updates['urls'], ensure_ascii=False)
+            if 'x_url' in updates:
+                bot_ext['x_url'] = updates.get('x_url') or ""
+            if 'vrc_group_url' in updates:
+                bot_ext['vrc_group_url'] = updates.get('vrc_group_url') or ""
+            if 'official_url' in updates:
+                bot_ext['official_url'] = updates.get('official_url') or ""
             if bot_ext:
                 google_updates['extendedProperties'] = {'private': bot_ext}
             cal_mgr.update_events(google_event_ids, google_updates)
@@ -1194,7 +1305,7 @@ async def _handle_delete_event_direct(
     if event['google_calendar_events']:
         cal_mgr = bot.get_calendar_manager_for_guild(int(guild_id))
         if not cal_mgr:
-            return "❌ カレンダーが未認証です。`/カレンダー認証` を実行してください。"
+            return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
         google_event_ids = [ge['event_id'] for ge in json.loads(event['google_calendar_events'])]
         cal_mgr.delete_events(google_event_ids)
 
@@ -1223,13 +1334,16 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
             return f"❌ 色名「{color_name}」が登録されていません。"
         color_id = preset['color_id']
 
-    urls = parsed.get('urls', []) or []
+    x_url = parsed.get('x_url') or None
+    vrc_group_url = parsed.get('vrc_group_url') or None
+    official_url = parsed.get('official_url') or None
 
-    # 説明欄にURLを追記
-    description = parsed.get('description', '')
-    if urls:
-        url_lines = "\n".join(urls)
-        description = f"{description}\n\nURLs:\n{url_lines}".strip()
+    # Firestoreには生のdescription、Google CalendarにはURL付きを使用
+    raw_description = parsed.get('description', '')
+    cal_description = raw_description
+    url_section = _build_url_description_section(x_url, vrc_group_url, official_url)
+    if url_section:
+        cal_description = f"{raw_description}\n\n{url_section}".strip()
 
     # データベースに保存
     event_id = bot.db_manager.add_event(
@@ -1242,16 +1356,18 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
         time=parsed.get('time'),
         weekday=parsed.get('weekday'),
         duration_minutes=parsed.get('duration_minutes', 60),
-        description=description,
+        description=raw_description,
         color_name=color_name,
-        urls=urls,
+        x_url=x_url,
+        vrc_group_url=vrc_group_url,
+        official_url=official_url,
         discord_channel_id=str(interaction.channel_id),
         created_by=str(interaction.user.id)
     )
 
     cal_mgr = bot.get_calendar_manager_for_guild(interaction.guild_id)
     if not cal_mgr:
-        return "❌ カレンダーが未認証です。`/カレンダー認証` を実行してください。"
+        return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
 
     # 不定期以外の場合、Googleカレンダーに登録
     if parsed['recurrence'] != 'irregular':
@@ -1270,13 +1386,15 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
             dates=dates,
             time_str=parsed['time'],
             duration_minutes=parsed.get('duration_minutes', 60),
-            description=description,
+            description=cal_description,
             tags=tags,
             color_id=color_id,
             extended_props={
                 "tags": json.dumps(tags, ensure_ascii=False),
                 "color_name": color_name or "",
-                "urls": json.dumps(urls, ensure_ascii=False)
+                "x_url": x_url or "",
+                "vrc_group_url": vrc_group_url or "",
+                "official_url": official_url or "",
             }
         )
 
@@ -1340,8 +1458,12 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
         if auto_color:
             updates['color_name'] = auto_color['name']
 
-    if 'urls' in parsed:
-        updates['urls'] = parsed.get('urls', [])
+    if 'x_url' in parsed:
+        updates['x_url'] = parsed.get('x_url') or None
+    if 'vrc_group_url' in parsed:
+        updates['vrc_group_url'] = parsed.get('vrc_group_url') or None
+    if 'official_url' in parsed:
+        updates['official_url'] = parsed.get('official_url') or None
 
     bot.db_manager.update_event(event['id'], updates)
 
@@ -1351,13 +1473,18 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
 
         google_updates = {}
         if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
-        if 'description' in parsed:
-            description = parsed['description']
-            urls = updates.get('urls') if 'urls' in updates else None
-            if urls:
-                url_lines = "\n".join(urls)
-                description = f"{description}\n\nURLs:\n{url_lines}".strip()
-            google_updates['description'] = description
+        if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url')):
+            # Firestoreのdescriptionは生テキスト（URL情報を含まない）
+            raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
+            url_section = _build_url_description_section(
+                updates.get('x_url', event.get('x_url')),
+                updates.get('vrc_group_url', event.get('vrc_group_url')),
+                updates.get('official_url', event.get('official_url')),
+            )
+            cal_description = raw_desc
+            if url_section:
+                cal_description = f"{raw_desc}\n\n{url_section}".strip()
+            google_updates['description'] = cal_description
         if 'color_name' in updates:
             color_name = updates.get('color_name')
             color_id = None
@@ -1370,14 +1497,18 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
         if google_updates:
             cal_mgr = bot.get_calendar_manager_for_guild(interaction.guild_id)
             if not cal_mgr:
-                return "❌ カレンダーが未認証です。`/カレンダー認証` を実行してください。"
+                return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
             bot_ext = {}
             if 'tags' in updates:
                 bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
             if 'color_name' in updates:
                 bot_ext['color_name'] = updates.get('color_name') or ""
-            if 'urls' in updates:
-                bot_ext['urls'] = json.dumps(updates['urls'], ensure_ascii=False)
+            if 'x_url' in updates:
+                bot_ext['x_url'] = updates.get('x_url') or ""
+            if 'vrc_group_url' in updates:
+                bot_ext['vrc_group_url'] = updates.get('vrc_group_url') or ""
+            if 'official_url' in updates:
+                bot_ext['official_url'] = updates.get('official_url') or ""
             if bot_ext:
                 google_updates['extendedProperties'] = {'private': bot_ext}
             cal_mgr.update_events(google_event_ids, google_updates)
@@ -1398,7 +1529,7 @@ async def handle_delete_event(bot: CalendarBot, interaction: discord.Interaction
     if event['google_calendar_events']:
         cal_mgr = bot.get_calendar_manager_for_guild(interaction.guild_id)
         if not cal_mgr:
-            return "❌ カレンダーが未認証です。`/カレンダー認証` を実行してください。"
+            return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
         google_event_ids = [ge['event_id'] for ge in json.loads(event['google_calendar_events'])]
         cal_mgr.delete_events(google_event_ids)
 
@@ -1468,7 +1599,6 @@ async def confirm_action(interaction: discord.Interaction, title: str, descripti
 
 def build_event_summary(parsed: Dict[str, Any]) -> str:
     tags = parsed.get('tags', []) or []
-    urls = parsed.get('urls', []) or []
     nth = parsed.get('nth_weeks')
     nth_str = f"第{','.join(str(n) for n in nth)}週" if nth else ""
     weekdays = ['月', '火', '水', '木', '金', '土', '日']
@@ -1487,7 +1617,9 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
         f"所要時間: {parsed.get('duration_minutes', 60)}分\n"
         f"色: {color_display}\n"
         f"タグ: {', '.join(tags) if tags else 'なし'}\n"
-        f"URL: {', '.join(urls) if urls else 'なし'}\n"
+        f"X URL: {parsed.get('x_url') or 'なし'}\n"
+        f"VRCグループURL: {parsed.get('vrc_group_url') or 'なし'}\n"
+        f"公式サイトURL: {parsed.get('official_url') or 'なし'}\n"
         f"説明: {parsed.get('description', '')}"
     )
 
@@ -1672,46 +1804,20 @@ def create_help_embed() -> discord.Embed:
         inline=False
     )
     embed.add_field(
-        name="色/タグ管理",
-        value="`/色初期設定` `/色一覧` `/色追加` `/色削除` `/タググループ一覧` `/タググループ追加` `/タググループ削除` `/タグ追加` `/タグ削除`",
+        name="/色",
+        value="`/色 初期設定` `/色 一覧` `/色 追加` `/色 削除`",
         inline=False
     )
     embed.add_field(
-        name="凡例",
-        value="`/凡例更新` で色とタグの凡例イベントを更新できます。",
+        name="/タグ",
+        value="`/タグ 一覧` `/タグ グループ追加` `/タグ グループ削除` `/タグ 追加` `/タグ 削除`",
         inline=False
     )
     embed.add_field(
-        name="カレンダー",
-        value=(
-            "`/カレンダー認証` OAuth認証でユーザーのカレンダーに直接アクセス\n"
-            "`/カレンダー認証解除` OAuth認証を解除\n"
-            "`/カレンダー認証状態` 現在の認証方式を確認\n"
-            "`/カレンダー設定` 使用するカレンダーIDを変更"
-        ),
+        name="/カレンダー",
+        value="`/カレンダー 認証` `/カレンダー 認証解除` `/カレンダー 認証状態` `/カレンダー 設定`",
         inline=False
     )
-    return embed
-
-def create_color_list_embed(presets: List[Dict[str, Any]], palette: Dict[str, Any]) -> discord.Embed:
-    embed = discord.Embed(title="🎨 色プリセット", color=discord.Color.blue())
-    if presets:
-        cat_labels = {c["key"]: c["label"] for c in COLOR_CATEGORIES}
-        lines = []
-        for p in presets:
-            rt = p.get('recurrence_type')
-            rt_label = f" [→ {cat_labels.get(rt, rt)}]" if rt else ""
-            lines.append(f"{p['name']} -> colorId {p['color_id']}{rt_label} ({p.get('description','')})")
-        embed.add_field(name="登録済み", value="\n".join(lines), inline=False)
-    else:
-        embed.add_field(name="登録済み", value="なし", inline=False)
-
-    event_colors = palette.get('event', {})
-    if event_colors:
-        sample = []
-        for cid, info in sorted(event_colors.items(), key=lambda x: int(x[0])):
-            sample.append(f"{cid}: {info.get('background')}")
-        embed.add_field(name="GoogleカラーID", value="\n".join(sample[:20]), inline=False)
     return embed
 
 def create_tag_group_list_embed(groups: List[Dict[str, Any]], tags: List[Dict[str, Any]]) -> discord.Embed:
@@ -1795,6 +1901,6 @@ async def update_legend_event(bot: CalendarBot, interaction: discord.Interaction
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
     cal_mgr = bot.get_calendar_manager_for_guild(interaction.guild_id)
     if not cal_mgr:
-        await interaction.followup.send("❌ カレンダーが未認証です。`/カレンダー認証` を実行してください。", ephemeral=True)
+        await interaction.followup.send("❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。", ephemeral=True)
         return
     await _update_legend_event_by_guild(bot, guild_id)
