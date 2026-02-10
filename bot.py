@@ -795,6 +795,15 @@ async def _confirm_and_handle_in_thread(
                         f"✅ 色プリセット「{category_label}」（{color_info.get('name', '?')} / colorId {color_select_view.selected_color_id}）を登録しました。"
                     )
 
+    # 未登録タグの確認・自動作成（add/edit でタグがある場合）
+    if action in ("add", "edit"):
+        tags = parsed.get('tags', []) or []
+        if tags:
+            resolved_tags = await _resolve_missing_tags(
+                bot, guild_id, tags, author.id, thread.send
+            )
+            parsed['tags'] = resolved_tags
+
     if action == "add":
         summary = build_event_summary(parsed)
         title = "予定追加の確認"
@@ -1089,6 +1098,139 @@ class ColorSelectForEventView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.author_id
+
+
+class MissingTagConfirmView(discord.ui.View):
+    """未登録タグの自動作成確認"""
+
+    def __init__(self, author_id: int, missing_tags: List[str]):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.missing_tags = missing_tags
+        self.value: Optional[str] = None  # "create" or "skip"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id
+
+    @discord.ui.button(label="作成して続行", style=discord.ButtonStyle.green)
+    async def create_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = "create"
+        await interaction.response.defer()
+        self.stop()
+
+    @discord.ui.button(label="タグなしで続行", style=discord.ButtonStyle.grey)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = "skip"
+        await interaction.response.defer()
+        self.stop()
+
+
+class TagGroupSelectView(discord.ui.View):
+    """タグのグループ割当選択"""
+
+    def __init__(self, author_id: int, groups: List[Dict[str, Any]], tag_name: str):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.tag_name = tag_name
+        self.selected_group_id: Optional[int] = None
+
+        options = [
+            discord.SelectOption(
+                label=group['name'],
+                value=str(group['id']),
+                description=(group.get('description', '') or '')[:50],
+            )
+            for group in groups
+        ]
+        select = discord.ui.Select(
+            placeholder=f"「{tag_name}」の追加先グループを選択",
+            options=options,
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return
+        self.selected_group_id = int(interaction.data["values"][0])
+        await interaction.response.defer()
+        self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id
+
+
+# ---- 未登録タグ自動作成ヘルパー ----
+
+async def _resolve_missing_tags(
+    bot: CalendarBot,
+    guild_id: str,
+    tags: List[str],
+    author_id: int,
+    send_func,
+) -> List[str]:
+    """未登録タグを検出し、ユーザー確認後に自動作成する。
+
+    Args:
+        send_func: メッセージ送信用callable（thread.send または interaction.followup.send ラッパー）
+    Returns:
+        解決済みタグリスト（未登録タグを除外またはDB登録済み）
+    """
+    if not tags:
+        return tags
+
+    missing_tags = bot.db_manager.find_missing_tags(guild_id, tags)
+    if not missing_tags:
+        return tags
+
+    # 確認ダイアログ
+    view = MissingTagConfirmView(author_id, missing_tags)
+    await send_func(
+        f"🏷️ 以下のタグは未登録です:\n"
+        f"• {'、'.join(missing_tags)}\n\n"
+        f"自動作成しますか？",
+        view=view,
+    )
+    await view.wait()
+
+    if view.value != "create":
+        # タグなしで続行: 未登録タグを除外
+        return [t for t in tags if t not in missing_tags]
+
+    # グループを取得して割当
+    groups = bot.db_manager.list_tag_groups(guild_id)
+
+    if not groups:
+        # デフォルトグループを作成
+        group_id = bot.db_manager.add_tag_group(guild_id, "一般", "自動作成されたタググループ")
+        for tag_name in missing_tags:
+            bot.db_manager.add_tag(guild_id, group_id, tag_name)
+        await send_func(f"✅ タググループ「一般」を作成し、タグ {'、'.join(missing_tags)} を追加しました。")
+    elif len(groups) == 1:
+        group = groups[0]
+        for tag_name in missing_tags:
+            bot.db_manager.add_tag(guild_id, group['id'], tag_name)
+        await send_func(f"✅ タグ {'、'.join(missing_tags)} をグループ「{group['name']}」に追加しました。")
+    else:
+        # 複数グループ — タグごとにグループを選択
+        for tag_name in missing_tags:
+            select_view = TagGroupSelectView(author_id, groups, tag_name)
+            await send_func(
+                f"🏷️ タグ「{tag_name}」をどのグループに追加しますか？",
+                view=select_view,
+            )
+            await select_view.wait()
+            if select_view.selected_group_id:
+                bot.db_manager.add_tag(guild_id, select_view.selected_group_id, tag_name)
+                group_name = next(
+                    (g['name'] for g in groups if g['id'] == select_view.selected_group_id), "?"
+                )
+                await send_func(f"✅ タグ「{tag_name}」をグループ「{group_name}」に追加しました。")
+            else:
+                # タイムアウト — このタグをスキップ
+                tags = [t for t in tags if t != tag_name]
+
+    return tags
 
 
 # ---- ダイレクト実行関数（interaction不要版） ----
@@ -1624,6 +1766,18 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
     )
 
 async def confirm_and_handle_add_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> Optional[str]:
+    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
+    # 未登録タグの確認・自動作成
+    tags = parsed.get('tags', []) or []
+    if tags:
+        async def _send_ephemeral(content, **kwargs):
+            return await interaction.followup.send(content, ephemeral=True, **kwargs)
+        resolved_tags = await _resolve_missing_tags(
+            bot, guild_id, tags, interaction.user.id, _send_ephemeral
+        )
+        parsed['tags'] = resolved_tags
+
     summary = build_event_summary(parsed)
     ok = await confirm_action(interaction, "予定追加の確認", summary)
     if not ok:
@@ -1632,6 +1786,18 @@ async def confirm_and_handle_add_event(bot: CalendarBot, interaction: discord.In
 
 async def confirm_and_handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> Optional[str]:
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
+    # 未登録タグの確認・自動作成（タグが変更される場合のみ）
+    if 'tags' in parsed:
+        tags = parsed.get('tags', []) or []
+        if tags:
+            async def _send_ephemeral(content, **kwargs):
+                return await interaction.followup.send(content, ephemeral=True, **kwargs)
+            resolved_tags = await _resolve_missing_tags(
+                bot, guild_id, tags, interaction.user.id, _send_ephemeral
+            )
+            parsed['tags'] = resolved_tags
+
     events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
     if not events:
         return f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。"
