@@ -11,7 +11,8 @@ VRChatイベント管理Bot のデプロイ完了後の日常的なメンテナ�
 3. [サービス管理](#サービス管理)
 4. [設定変更](#設定変更)
 5. [バックアップ](#バックアップ)
-6. [トラブルシューティング](#トラブルシューティング)
+6. [Firestoreデータ管理](#firestoreデータ管理)
+7. [トラブルシューティング](#トラブルシューティング)
 
 ---
 
@@ -204,6 +205,90 @@ python firestore_backup.py --restore
 # 復元後、Botを再起動
 sudo systemctl restart vrc-calendar-bot
 ```
+
+---
+
+## Firestoreデータ管理
+
+`scripts/` ディレクトリにFirestoreのデータ確認・削除用のユーティリティスクリプトがあります。
+
+### 前提条件
+
+- `.env` に `GCP_PROJECT_ID` が設定されていること
+- `credentials.json`（サービスアカウントキー）が配置されていること
+- 仮想環境が有効化されていること（`source .venv/bin/activate`）
+
+### データ確認（firestore_inspect.py）
+
+Firestoreに登録されているデータをターミナルから確認できます。
+
+```bash
+# [OCI VM上で実行]
+cd /home/ubuntu/VRC_Calendar_Discord_bot
+source .venv/bin/activate
+
+# 全ギルドの概要（コレクション名と件数の一覧）
+python scripts/firestore_inspect.py
+
+# 特定ギルドの全データ詳細
+python scripts/firestore_inspect.py --guild-id 123456789
+
+# 特定ギルドのサブコレクションを指定して表示
+python scripts/firestore_inspect.py --guild-id 123456789 --sub events          # 予定一覧
+python scripts/firestore_inspect.py --guild-id 123456789 --sub color_presets   # 色プリセット
+python scripts/firestore_inspect.py --guild-id 123456789 --sub tag_groups      # タググループ
+python scripts/firestore_inspect.py --guild-id 123456789 --sub tags            # タグ
+python scripts/firestore_inspect.py --guild-id 123456789 --sub oauth_tokens    # OAuth認証情報
+
+# トップレベルコレクションを表示（凡例イベントIDなど）
+python scripts/firestore_inspect.py --collection settings
+python scripts/firestore_inspect.py --collection counters
+```
+
+#### Firestoreのコレクション構造
+
+```
+guilds/{guild_id}/
+  ├── events/                          予定データ
+  ├── tag_groups/                      タググループ
+  ├── tags/                            タグ
+  ├── oauth_tokens/{user_id}/          OAuth認証情報
+  │   └── color_presets/               色プリセット
+  ├── irregular_events/                不定期予定
+  └── notification_settings/           通知設定
+counters/                              ID自動採番カウンター
+settings/                              凡例イベントID等のグローバル設定
+oauth_states/                          OAuth認証一時状態
+```
+
+### データ削除（firestore_truncate.py）
+
+テストデータのクリアなど、Firestoreのデータを一括削除できます。
+
+```bash
+# [OCI VM上で実行]
+cd /home/ubuntu/VRC_Calendar_Discord_bot
+source .venv/bin/activate
+
+# ドライラン（削除せず対象を表示して確認）
+python scripts/firestore_truncate.py --all --dry-run
+
+# 全データ削除（guilds, counters, settings, oauth_states）
+# ※ 確認プロンプトで "yes" を入力すると実行
+python scripts/firestore_truncate.py --all
+
+# 特定ギルドのデータのみ削除
+python scripts/firestore_truncate.py --guild-id 123456789
+
+# 特定ギルドのドライラン
+python scripts/firestore_truncate.py --guild-id 123456789 --dry-run
+```
+
+> **注意**: `--all` で全データを削除すると、OAuth認証情報も消えるためユーザーの再認証が必要になります。本番環境では `--guild-id` での個別削除か、事前にバックアップ（`python firestore_backup.py`）を取ることを推奨します。
+
+### GUIでの確認
+
+[Firebaseコンソール](https://console.firebase.google.com/) → プロジェクト選択 → Firestore Database からもGUIでデータの確認・編集・削除が可能です。
 
 ---
 
