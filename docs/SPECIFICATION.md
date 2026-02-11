@@ -153,6 +153,9 @@ class ConversationManager:
 │
 ├── settings/{key}                             # グローバル設定
 │     └── { value, updated_at }
+│     # 凡例キー例:
+│     #   legend_color_event_id:{guild_id}:{user_id}  → 色凡例イベントID
+│     #   legend_tag_event_id:{guild_id}:{user_id}    → タグ凡例イベントID
 │
 ├── oauth_states/{state}                       # OAuth CSRF state（一時的）
 │     └── { guild_id, user_id, created_at }
@@ -227,7 +230,7 @@ class ConversationManager:
 | updated_at | string | 更新日時（ISO 8601） |
 | is_active | boolean | 有効フラグ（論理削除用） |
 
-### 5.3 oauth_tokens ドキュメント
+### 5.6 oauth_tokens ドキュメント
 
 パス: `guilds/{guild_id}/oauth_tokens/{user_id}`（ユーザーごとに1ドキュメント）
 
@@ -431,7 +434,7 @@ NLPは登録済みタグのみを選択肢として提示します。ユーザ�
     └── 「タグなしで続行」 → 未登録タグを除外して続行
 ```
 
-### 7.5 曜日マッピング
+### 7.6 曜日マッピング
 
 | 曜日 | 値 |
 |------|-----|
@@ -467,6 +470,62 @@ OAuth 2.0 認証を使用します。各ユーザーが `/カレンダー 認証
 ```
 https://www.googleapis.com/auth/calendar
 ```
+
+### 8.4 イベント説明欄フォーマット
+
+Google Calendarに登録する予定の説明欄（description）は `_build_event_description` で統一フォーマットに整形されます。
+
+```
+{raw_description}
+
+─── タグ ───
+[グループ名] タグ1, タグ2
+未分類タグ
+
+─── リンク ───
+X: https://...
+VRCグループ: https://...
+公式サイト: https://...
+```
+
+- タグがグループに所属している場合は `[グループ名]` 付きで表示
+- いずれかのグループに属さないタグは単独表示
+- 各セクションはデータがある場合のみ出力される（空セクションは省略）
+
+### 8.5 凡例イベントアーキテクチャ
+
+Googleカレンダー上に「色プリセット凡例」と「タグ凡例」の2つの凡例イベントを作成し、カレンダーの色・タグ設定を視覚的に確認できるようにします。
+
+#### 凡例イベントの種類
+
+| 種類 | summary | 設定キー | 内容 |
+|------|---------|---------|------|
+| 色凡例 | 🎨 色プリセット凡例 | `legend_color_event_id:{guild_id}:{user_id}` | 色プリセット一覧（Emoji・色名・カテゴリ） |
+| タグ凡例 | 🏷️ タグ凡例 | `legend_tag_event_id:{guild_id}:{user_id}` | タググループ・タグ一覧 |
+
+#### 凡例イベントの特徴
+
+- **colorId**: グラファイト（colorId 8）で統一（`LEGEND_COLOR_ID`）
+- **期間**: 2000-01-01 〜 2100-01-01（終日イベント）
+- **更新タイミング**: 色プリセット変更時（色凡例）、タグ変更時（タグ凡例）、予定登録フロー内
+
+#### 凡例更新関数
+
+| 関数 | 用途 |
+|------|------|
+| `_upsert_legend_event` | 共通ヘルパー（作成/更新を判定して実行） |
+| `_update_color_legend_for_user` | 特定ユーザーの色凡例を更新 |
+| `_update_tag_legend_for_user` | 特定ユーザーのタグ凡例を更新 |
+| `_update_legend_event_for_user` | 後方互換: 色・タグ両方を更新 |
+| `_update_legend_event_by_guild` | guild内の全認証カレンダーの凡例を更新（旧形式マイグレーション含む） |
+
+#### 旧凡例イベントのマイグレーション
+
+旧形式（`legend_event_id:{guild_id}:{user_id}`）の凡例イベントが存在する場合、`_update_legend_event_by_guild` 内で以下の処理を行います:
+
+1. 旧凡例イベントをGoogleカレンダーから削除
+2. 旧設定キーをFirestoreから削除
+3. 新しい色凡例・タグ凡例を作成
 
 ## 9. セキュリティ
 
@@ -547,21 +606,32 @@ recurrence + nth_weeks から色カテゴリを決定
          └── スキップ → 色なしで確認フローへ
 ```
 
-### 11.2 色セットアップウィザード（/色 初期設定）
+### 11.2 色セットアップウィザード
 
-OAuth認証後に実行する初期設定コマンドです。5つの色カテゴリ（毎週/隔週/月1回/第n週/不定期）それぞれにGoogle CalendarのcolorId（1-11）を割り当てます。
+OAuth認証後に実行する初期設定です。5つの色カテゴリ（毎週/隔週/月1回/第n週/不定期）それぞれにGoogle CalendarのcolorId（1-11、グラファイト=8を除く10色）を割り当てます。
+
+> **グラファイト（colorId 8）は凡例イベント専用**として予約されており、`USER_SELECTABLE_COLORS` でユーザー選択可能な色から除外されています。`/色 追加` コマンドでも colorId 8 はエラーになります。
+
+#### 起動方法
+
+色セットアップは以下の2つの方法で実行できます:
+
+1. **`/色 初期設定` コマンド**: 明示的に実行する方法（manage_guild権限必要）
+2. **スレッド内自動起動**: 色未設定のカレンダーで `/予定` による予定追加時、確認フロー内で自動的にウィザードが表示される
+
+#### フロー
 
 ```
-/色 初期設定 実行
+色セットアップ開始
     │
     ▼
-SelectMenu で各カテゴリの色を選択（5カテゴリ分）
+SelectMenu で各カテゴリの色を選択（5カテゴリ分、グラファイト除外）
     │
     ▼
 色プリセットを一括登録（recurrence_type + is_auto_generated=True）
     │
     ▼
-凡例イベントを更新
+色凡例イベントを更新（_update_color_legend_for_user）
 ```
 
 ### 11.3 予定編集時の色再割当
