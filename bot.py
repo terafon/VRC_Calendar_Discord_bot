@@ -788,6 +788,167 @@ def setup_commands(bot: CalendarBot):
 
     bot.tree.add_command(calendar_group)
 
+    # ---- 通知管理グループ ----
+    notification_group = app_commands.Group(
+        name="通知", description="週次通知の管理",
+        default_permissions=discord.Permissions(manage_guild=True),
+    )
+
+    WEEKDAY_CHOICES = [
+        app_commands.Choice(name="月曜日", value=0),
+        app_commands.Choice(name="火曜日", value=1),
+        app_commands.Choice(name="水曜日", value=2),
+        app_commands.Choice(name="木曜日", value=3),
+        app_commands.Choice(name="金曜日", value=4),
+        app_commands.Choice(name="土曜日", value=5),
+        app_commands.Choice(name="日曜日", value=6),
+    ]
+
+    @notification_group.command(name="設定", description="週次通知のスケジュールを設定します")
+    @app_commands.describe(
+        曜日="通知する曜日",
+        時刻="通知する時刻（0-23、JST）",
+        チャンネル="通知を送信するチャンネル",
+        分="通知する分（0-59、デフォルト: 0）",
+    )
+    @app_commands.choices(曜日=WEEKDAY_CHOICES)
+    async def notification_setup_command(
+        interaction: discord.Interaction,
+        曜日: app_commands.Choice[int],
+        時刻: int,
+        チャンネル: discord.TextChannel,
+        分: int = 0,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        if not interaction.guild_id:
+            await interaction.followup.send("サーバー内で使用してください。", ephemeral=True)
+            return
+
+        if 時刻 < 0 or 時刻 > 23:
+            await interaction.followup.send("時刻は0〜23の範囲で指定してください。", ephemeral=True)
+            return
+
+        if 分 < 0 or 分 > 59:
+            await interaction.followup.send("分は0〜59の範囲で指定してください。", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild_id)
+        user_id = str(interaction.user.id)
+
+        # 複数カレンダーがあるかチェック
+        all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
+        if len(all_tokens) > 1:
+            # カレンダー選択UIを表示
+            view = NotificationCalendarSelectView(
+                bot, guild_id, user_id, all_tokens,
+                曜日.value, 時刻, 分, str(チャンネル.id)
+            )
+            await interaction.followup.send(
+                "通知対象のカレンダーを選択してください（複数選択可）:",
+                view=view, ephemeral=True
+            )
+        else:
+            # カレンダーが1つ以下 → 全カレンダーで設定
+            bot.db_manager.save_notification_settings(
+                guild_id=guild_id,
+                enabled=True,
+                weekday=曜日.value,
+                hour=時刻,
+                minute=分,
+                channel_id=str(チャンネル.id),
+                calendar_owners=[],
+                configured_by=user_id,
+            )
+            weekday_names = ["月", "火", "水", "木", "金", "土", "日"]
+            await interaction.followup.send(
+                f"✅ 週次通知を設定しました！\n"
+                f"📅 毎週{weekday_names[曜日.value]}曜日 {時刻:02d}:{分:02d}（JST）\n"
+                f"📢 通知先: <#{チャンネル.id}>",
+                ephemeral=True
+            )
+
+    @notification_group.command(name="停止", description="週次通知を停止します")
+    async def notification_stop_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if not interaction.guild_id:
+            await interaction.followup.send("サーバー内で使用してください。", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild_id)
+        bot.db_manager.disable_notification(guild_id)
+        await interaction.followup.send("✅ 週次通知を停止しました。", ephemeral=True)
+
+    @notification_group.command(name="状態", description="週次通知の設定状態を表示します")
+    async def notification_status_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if not interaction.guild_id:
+            await interaction.followup.send("サーバー内で使用してください。", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild_id)
+        settings = bot.db_manager.get_notification_settings(guild_id)
+
+        if not settings:
+            await interaction.followup.send("通知は設定されていません。`/通知 設定` で設定してください。", ephemeral=True)
+            return
+
+        weekday_names = ["月", "火", "水", "木", "金", "土", "日"]
+        status_emoji = "✅" if settings.get("enabled") else "⏸️"
+        status_text = "有効" if settings.get("enabled") else "停止中"
+
+        embed = discord.Embed(
+            title="🔔 週次通知設定",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="状態",
+            value=f"{status_emoji} {status_text}",
+            inline=True
+        )
+        embed.add_field(
+            name="スケジュール",
+            value=f"毎週{weekday_names[settings.get('weekday', 0)]}曜日 {settings.get('hour', 0):02d}:{settings.get('minute', 0):02d}（JST）",
+            inline=True
+        )
+        embed.add_field(
+            name="通知先",
+            value=f"<#{settings.get('channel_id', '')}>",
+            inline=True
+        )
+
+        calendar_owners = settings.get("calendar_owners", [])
+        if calendar_owners:
+            owner_mentions = [f"<@{uid}>" for uid in calendar_owners]
+            embed.add_field(
+                name="対象カレンダー",
+                value=", ".join(owner_mentions),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="対象カレンダー",
+                value="全カレンダー",
+                inline=False
+            )
+
+        if settings.get("last_sent_at"):
+            embed.add_field(
+                name="最終送信",
+                value=settings["last_sent_at"],
+                inline=True
+            )
+
+        configured_by = settings.get("configured_by", "")
+        if configured_by:
+            embed.set_footer(text=f"設定者: {configured_by}")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    bot.tree.add_command(notification_group)
+
 
 # ---- ヘルパー関数 ----
 
@@ -2322,6 +2483,14 @@ def create_help_embed() -> discord.Embed:
         name="/カレンダー",
         value="`/カレンダー 認証` `/カレンダー 認証解除` `/カレンダー 認証状態` `/カレンダー 設定` `/カレンダー 一覧`",
         inline=False
+    )
+    embed.add_field(
+        name="/通知",
+        value=(
+            "`/通知 設定` - 週次通知のスケジュールを設定\n"
+            "`/通知 停止` `/通知 状態`\n"
+            "※ サーバー管理権限が必要"
+        ), inline=False
     )
     return embed
 

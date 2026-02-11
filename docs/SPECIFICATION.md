@@ -165,7 +165,8 @@ class ConversationManager:
       ├── tag_groups/{group_id}                # タググループ
       ├── tags/{tag_id}                        # タグ
       ├── guild_settings/config                # サーバー設定
-      └── oauth_tokens/{user_id}               # OAuthトークン（ユーザーごと）
+      ├── oauth_tokens/{user_id}               # OAuthトークン（ユーザーごと）
+      └── notification_settings/config          # 通知設定
 ```
 
 ### 5.2 guilds ドキュメント（サーバー設定）
