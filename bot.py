@@ -1010,12 +1010,38 @@ def _auto_assign_color(db_manager: FirestoreManager, guild_id: str, user_id: str
     return db_manager.get_color_preset_by_recurrence(guild_id, user_id, category)
 
 
-def _next_weekday_datetime(weekday: int, time_str: str) -> datetime:
-    """次の該当曜日の日時を返す（今日が該当曜日なら今日）"""
+def _next_weekday_datetime(
+    weekday: int,
+    time_str: str,
+    recurrence: str = "weekly",
+    nth_weeks: Optional[List[int]] = None,
+) -> datetime:
+    """次の該当曜日の日時を返す
+
+    nth_week の場合は直近で該当する第n週の曜日を返す。
+    weekly/biweekly の場合は次の該当曜日を返す（今日が該当曜日なら今日）。
+    """
+    hour, minute = map(int, time_str.split(':'))
+
+    if recurrence == "nth_week" and nth_weeks:
+        now = datetime.now()
+        # 今月と来月で直近の該当日を探す
+        for month_offset in range(3):
+            year = now.year
+            month = now.month + month_offset
+            if month > 12:
+                year += (month - 1) // 12
+                month = (month - 1) % 12 + 1
+            for nth in sorted(nth_weeks):
+                candidate = RecurrenceCalculator._get_nth_weekday(year, month, nth, weekday)
+                if candidate and candidate.date() >= now.date():
+                    return candidate.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # フォールバック（通常到達しない）
+        return _next_weekday_datetime(weekday, time_str)
+
     now = datetime.now()
     days_ahead = (weekday - now.weekday()) % 7
     target = now + timedelta(days=days_ahead)
-    hour, minute = map(int, time_str.split(':'))
     return target.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
@@ -1878,12 +1904,16 @@ async def _handle_add_event_direct(
         return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
 
     if parsed['recurrence'] != 'irregular':
+        nth_weeks = parsed.get('nth_weeks') or []
         rrule = RecurrenceCalculator.to_rrule(
             recurrence=parsed['recurrence'],
-            nth_weeks=parsed.get('nth_weeks') or [],
+            nth_weeks=nth_weeks,
             weekday=parsed['weekday'],
         )
-        start_dt = _next_weekday_datetime(parsed['weekday'], parsed['time'])
+        start_dt = _next_weekday_datetime(
+            parsed['weekday'], parsed['time'],
+            recurrence=parsed['recurrence'], nth_weeks=nth_weeks,
+        )
         end_dt = start_dt + timedelta(minutes=parsed.get('duration_minutes', 60))
 
         google_event_id = cal_mgr.create_recurring_event(
@@ -2026,7 +2056,10 @@ async def _handle_edit_event_direct(
             )
 
             rrule = RecurrenceCalculator.to_rrule(new_recurrence, new_nth_weeks, new_weekday)
-            start_dt = _next_weekday_datetime(new_weekday, new_time)
+            start_dt = _next_weekday_datetime(
+                new_weekday, new_time,
+                recurrence=new_recurrence, nth_weeks=new_nth_weeks,
+            )
             end_dt = start_dt + timedelta(minutes=new_duration)
 
             google_event_id = cal_mgr.create_recurring_event(
@@ -2185,12 +2218,16 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
 
     # 不定期以外の場合、RRULE繰り返しイベントとしてGoogleカレンダーに登録
     if parsed['recurrence'] != 'irregular':
+        nth_weeks = parsed.get('nth_weeks') or []
         rrule = RecurrenceCalculator.to_rrule(
             recurrence=parsed['recurrence'],
-            nth_weeks=parsed.get('nth_weeks') or [],
+            nth_weeks=nth_weeks,
             weekday=parsed['weekday'],
         )
-        start_dt = _next_weekday_datetime(parsed['weekday'], parsed['time'])
+        start_dt = _next_weekday_datetime(
+            parsed['weekday'], parsed['time'],
+            recurrence=parsed['recurrence'], nth_weeks=nth_weeks,
+        )
         end_dt = start_dt + timedelta(minutes=parsed.get('duration_minutes', 60))
 
         google_event_id = cal_mgr.create_recurring_event(
@@ -2335,7 +2372,10 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
             )
 
             rrule = RecurrenceCalculator.to_rrule(new_recurrence, new_nth_weeks, new_weekday)
-            start_dt = _next_weekday_datetime(new_weekday, new_time)
+            start_dt = _next_weekday_datetime(
+                new_weekday, new_time,
+                recurrence=new_recurrence, nth_weeks=new_nth_weeks,
+            )
             end_dt = start_dt + timedelta(minutes=new_duration)
 
             google_event_id = cal_mgr.create_recurring_event(
