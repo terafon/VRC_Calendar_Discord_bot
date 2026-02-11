@@ -234,13 +234,22 @@ class FirestoreManager:
             return doc.to_dict().get("value", default)
         return default
 
-    # ---- 色プリセット ----
+    # ---- 色プリセット（カレンダー単位） ----
 
-    def add_color_preset(self, guild_id: str, name: str, color_id: str, description: str = "",
+    def _color_presets_ref(self, guild_id: str, user_id: str):
+        """oauth_tokens/{user_id}/color_presets への参照"""
+        return (
+            self._guild_ref(guild_id)
+            .collection("oauth_tokens").document(user_id)
+            .collection("color_presets")
+        )
+
+    def add_color_preset(self, guild_id: str, user_id: str, name: str, color_id: str, description: str = "",
                          recurrence_type: Optional[str] = None, is_auto_generated: bool = False):
-        """色プリセットを追加
+        """色プリセットを追加（カレンダー単位）
 
         Args:
+            user_id: カレンダーオーナーのユーザーID
             recurrence_type: "weekly" | "biweekly" | "monthly" | "nth_week" | "irregular" | None
             is_auto_generated: True = セットアップウィザードで自動生成
         """
@@ -254,28 +263,26 @@ class FirestoreManager:
             data["recurrence_type"] = recurrence_type
         if is_auto_generated:
             data["is_auto_generated"] = True
-        self._guild_ref(guild_id).collection("color_presets").document(name).set(data)
+        self._color_presets_ref(guild_id, user_id).document(name).set(data)
 
-    def list_color_presets(self, guild_id: str) -> List[dict]:
-        """色プリセット一覧"""
+    def list_color_presets(self, guild_id: str, user_id: str) -> List[dict]:
+        """色プリセット一覧（カレンダー単位）"""
         docs = (
-            self._guild_ref(guild_id)
-            .collection("color_presets")
+            self._color_presets_ref(guild_id, user_id)
             .order_by("name")
             .get()
         )
         return [doc.to_dict() for doc in docs]
 
-    def get_color_preset(self, guild_id: str, name: str) -> Optional[dict]:
-        """色プリセットを取得"""
-        doc = self._guild_ref(guild_id).collection("color_presets").document(name).get()
+    def get_color_preset(self, guild_id: str, user_id: str, name: str) -> Optional[dict]:
+        """色プリセットを取得（カレンダー単位）"""
+        doc = self._color_presets_ref(guild_id, user_id).document(name).get()
         return doc.to_dict() if doc.exists else None
 
-    def get_color_preset_by_recurrence(self, guild_id: str, recurrence_type: str) -> Optional[dict]:
-        """繰り返しタイプに対応する色プリセットを取得"""
+    def get_color_preset_by_recurrence(self, guild_id: str, user_id: str, recurrence_type: str) -> Optional[dict]:
+        """繰り返しタイプに対応する色プリセットを取得（カレンダー単位）"""
         docs = (
-            self._guild_ref(guild_id)
-            .collection("color_presets")
+            self._color_presets_ref(guild_id, user_id)
             .where(filter=firestore.FieldFilter("recurrence_type", "==", recurrence_type))
             .limit(1)
             .get()
@@ -284,15 +291,16 @@ class FirestoreManager:
             return doc.to_dict()
         return None
 
-    def initialize_default_color_presets(self, guild_id: str, presets_data: list) -> bool:
-        """色プリセットを一括登録する（セットアップウィザード用）
+    def initialize_default_color_presets(self, guild_id: str, user_id: str, presets_data: list) -> bool:
+        """色プリセットを一括登録する（セットアップウィザード用、カレンダー単位）
 
         Args:
+            user_id: カレンダーオーナーのユーザーID
             presets_data: [{"name": "色名", "color_id": "9", "recurrence_type": "weekly", "description": "説明"}, ...]
         """
         batch = self.db.batch()
         for preset in presets_data:
-            ref = self._guild_ref(guild_id).collection("color_presets").document(preset["name"])
+            ref = self._color_presets_ref(guild_id, user_id).document(preset["name"])
             batch.set(ref, {
                 "guild_id": guild_id,
                 "name": preset["name"],
@@ -304,32 +312,73 @@ class FirestoreManager:
         batch.commit()
 
         # セットアップ完了フラグを設定
-        self.mark_color_setup_done(guild_id)
+        self.mark_color_setup_done(guild_id, user_id)
         return True
 
-    def is_color_setup_pending(self, guild_id: str) -> bool:
-        """色セットアップが未完了かどうかを確認"""
-        doc = self._guild_ref(guild_id).get()
+    def is_color_setup_done(self, guild_id: str, user_id: str) -> bool:
+        """色セットアップが完了しているかどうかを確認（カレンダー単位）"""
+        doc = self._guild_ref(guild_id).collection("oauth_tokens").document(user_id).get()
         if doc.exists:
-            return doc.to_dict().get("pending_color_setup", False)
+            return doc.to_dict().get("color_setup_done", False)
         return False
 
-    def mark_color_setup_done(self, guild_id: str):
-        """色セットアップ完了フラグを設定"""
-        self._guild_ref(guild_id).set({
-            "pending_color_setup": False,
-            "default_colors_initialized": True,
-        }, merge=True)
+    def mark_color_setup_done(self, guild_id: str, user_id: str):
+        """色セットアップ完了フラグを設定（カレンダー単位）"""
+        self._guild_ref(guild_id).collection("oauth_tokens").document(user_id).update({
+            "color_setup_done": True,
+        })
 
-    def mark_color_setup_pending(self, guild_id: str):
-        """色セットアップ未完了フラグを設定"""
-        self._guild_ref(guild_id).set({
-            "pending_color_setup": True,
-        }, merge=True)
+    def delete_color_preset(self, guild_id: str, user_id: str, name: str):
+        """色プリセットを削除（カレンダー単位）"""
+        self._color_presets_ref(guild_id, user_id).document(name).delete()
 
-    def delete_color_preset(self, guild_id: str, name: str):
-        """色プリセットを削除"""
-        self._guild_ref(guild_id).collection("color_presets").document(name).delete()
+    def list_all_color_presets_by_calendar(self, guild_id: str) -> Dict[str, List[dict]]:
+        """全カレンダーの色プリセットをdict形式で返す（NLPコンテキスト用）
+
+        Returns:
+            {user_id: [preset_dict, ...], ...}
+        """
+        all_tokens = self.get_all_oauth_tokens(guild_id)
+        result: Dict[str, List[dict]] = {}
+        for token in all_tokens:
+            user_id = token.get("_doc_id") or token.get("authenticated_by", "")
+            if not user_id:
+                continue
+            presets = self.list_color_presets(guild_id, user_id)
+            display_name = token.get("display_name") or f"<@{user_id}>"
+            result[display_name] = presets
+        return result
+
+    def migrate_guild_color_presets_to_calendars(self, guild_id: str):
+        """旧guild単位プリセットを全カレンダーにコピー"""
+        guild_doc = self._guild_ref(guild_id).get()
+        if guild_doc.exists and guild_doc.to_dict().get("color_presets_migrated"):
+            return  # 既にマイグレーション済み
+
+        # 旧パスの色プリセットを取得
+        old_docs = self._guild_ref(guild_id).collection("color_presets").get()
+        old_presets = [doc.to_dict() for doc in old_docs]
+        if not old_presets:
+            return  # 旧プリセットなし
+
+        # 全認証カレンダーにコピー
+        all_tokens = self.get_all_oauth_tokens(guild_id)
+        batch = self.db.batch()
+        for token in all_tokens:
+            user_id = token.get("_doc_id") or token.get("authenticated_by", "")
+            if not user_id:
+                continue
+            for preset in old_presets:
+                ref = self._color_presets_ref(guild_id, user_id).document(preset["name"])
+                batch.set(ref, preset)
+            # color_setup_done = True に設定
+            token_ref = self._guild_ref(guild_id).collection("oauth_tokens").document(user_id)
+            batch.update(token_ref, {"color_setup_done": True})
+        batch.commit()
+
+        # マイグレーション完了フラグ
+        self._guild_ref(guild_id).set({"color_presets_migrated": True}, merge=True)
+        print(f"Guild {guild_id}: migrated {len(old_presets)} color presets to {len(all_tokens)} calendars")
 
     # ---- タググループ / タグ ----
 
@@ -503,11 +552,12 @@ class FirestoreManager:
             # 再認証: トークンのみ更新、表示名等は保持
             doc_ref.update(data)
         else:
-            # 新規: display_name, description, is_default を設定
+            # 新規: display_name, description, is_default, color_setup_done を設定
             all_tokens = self.get_all_oauth_tokens(guild_id)
             data["display_name"] = display_name
             data["description"] = description
             data["is_default"] = len(all_tokens) == 0  # 最初のカレンダーならデフォルト
+            data["color_setup_done"] = False  # 色初期設定は未完了
             doc_ref.set(data)
 
     def get_oauth_tokens(self, guild_id: str, user_id: str) -> Optional[dict]:
