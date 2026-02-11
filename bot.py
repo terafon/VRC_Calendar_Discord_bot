@@ -697,13 +697,12 @@ def setup_commands(bot: CalendarBot):
         for token in all_tokens:
             user_id = token.get("_doc_id") or token.get("authenticated_by")
             display_name = token.get("display_name") or "未設定"
-            calendar_id = token.get("calendar_id", "primary")
             is_default = "⭐ " if token.get("is_default") else ""
             desc = token.get("description", "")
             desc_line = f"\n説明: {desc}" if desc else ""
             embed.add_field(
                 name=f"{is_default}{display_name}",
-                value=f"認証者: <@{user_id}>\nカレンダーID: `{calendar_id}`{desc_line}",
+                value=f"認証者: <@{user_id}>{desc_line}",
                 inline=False,
             )
 
@@ -1582,7 +1581,7 @@ async def _handle_edit_event_direct(
             cal_owner = event.get('calendar_owner') or event.get('created_by', '')
             cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
             if not cal_mgr:
-                return f"❌ この予定が登録されたカレンダー（{cal_owner}）の認証が無効です。"
+                return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
             bot_ext = {}
             if 'tags' in updates:
                 bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
@@ -1617,7 +1616,7 @@ async def _handle_delete_event_direct(
         cal_owner = event.get('calendar_owner') or event.get('created_by', '')
         cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
         if not cal_mgr:
-            return f"❌ この予定が登録されたカレンダー（{cal_owner}）の認証が無効です。"
+            return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
         google_event_ids = [ge['event_id'] for ge in json.loads(event['google_calendar_events'])]
         cal_mgr.delete_events(google_event_ids)
 
@@ -1820,7 +1819,7 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
             cal_owner = event.get('calendar_owner') or event.get('created_by', '')
             cal_mgr = bot.get_calendar_manager_for_user(interaction.guild_id, cal_owner) if cal_owner else None
             if not cal_mgr:
-                return f"❌ この予定が登録されたカレンダー（{cal_owner}）の認証が無効です。"
+                return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
             bot_ext = {}
             if 'tags' in updates:
                 bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
@@ -1853,7 +1852,7 @@ async def handle_delete_event(bot: CalendarBot, interaction: discord.Interaction
         cal_owner = event.get('calendar_owner') or event.get('created_by', '')
         cal_mgr = bot.get_calendar_manager_for_user(interaction.guild_id, cal_owner) if cal_owner else None
         if not cal_mgr:
-            return f"❌ この予定が登録されたカレンダー（{cal_owner}）の認証が無効です。"
+            return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
         google_event_ids = [ge['event_id'] for ge in json.loads(event['google_calendar_events'])]
         cal_mgr.delete_events(google_event_ids)
 
