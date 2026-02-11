@@ -168,6 +168,10 @@ class CalendarBot(commands.Bot):
             except Exception as e:
                 print(f"Migration error for guild {guild_id}: {e}")
 
+        # 定期通知タスクループ開始
+        if not self.check_scheduled_notifications.is_running():
+            self.check_scheduled_notifications.start()
+
     @tasks.loop(minutes=1)
     async def cleanup_sessions(self):
         """期限切れの会話セッションを定期的にクリーンアップ"""
@@ -180,6 +184,80 @@ class CalendarBot(commands.Bot):
                     await thread.edit(archived=True)
             except Exception as e:
                 print(f"Failed to archive expired thread {thread_id}: {e}")
+
+    @tasks.loop(minutes=1)
+    async def check_scheduled_notifications(self):
+        """サーバーごとの定期通知をチェック・送信"""
+        from datetime import timezone, timedelta as td
+        import traceback
+
+        jst = timezone(td(hours=9))
+        now_jst = datetime.now(jst)
+        current_weekday = now_jst.weekday()
+        current_hour = now_jst.hour
+        current_minute = now_jst.minute
+        today_str = now_jst.strftime("%Y-%m-%d")
+
+        try:
+            all_settings = self.db_manager.get_all_notification_settings()
+        except Exception as e:
+            print(f"Error fetching notification settings: {e}")
+            return
+
+        for settings in all_settings:
+            try:
+                if (settings.get("weekday") != current_weekday or
+                        settings.get("hour") != current_hour or
+                        settings.get("minute") != current_minute):
+                    continue
+
+                # 重複送信防止
+                last_sent = settings.get("last_sent_at", "")
+                if last_sent.startswith(today_str):
+                    continue
+
+                guild_id = settings.get("guild_id")
+                if not guild_id:
+                    continue
+
+                await self._send_scheduled_notification(guild_id, settings)
+            except Exception as e:
+                print(f"Error processing notification for guild {settings.get('guild_id')}: {e}")
+                traceback.print_exc()
+
+    @check_scheduled_notifications.before_loop
+    async def before_check_scheduled_notifications(self):
+        await self.wait_until_ready()
+
+    async def _send_scheduled_notification(self, guild_id: str, settings: dict):
+        """スケジュール通知を送信"""
+        channel_id = settings.get("channel_id")
+        if not channel_id:
+            return
+
+        try:
+            channel = await self.fetch_channel(int(channel_id))
+        except Exception:
+            print(f"Cannot fetch channel {channel_id} for guild {guild_id}")
+            return
+
+        events = self.db_manager.get_this_week_events(guild_id)
+
+        # calendar_owners フィルタ
+        calendar_owners = settings.get("calendar_owners", [])
+        if calendar_owners:
+            events = [e for e in events if e.get("calendar_owner") in calendar_owners]
+
+        embed = create_weekly_embed(events)
+        try:
+            await channel.send(content="🔔 **今週の予定通知**", embed=embed)
+            # 最終送信時刻を更新
+            from datetime import timezone, timedelta as td
+            jst = timezone(td(hours=9))
+            now_str = datetime.now(jst).isoformat()
+            self.db_manager.update_notification_last_sent(guild_id, now_str)
+        except Exception as e:
+            print(f"Failed to send scheduled notification to {channel_id}: {e}")
 
 
 # コマンド定義
@@ -1254,6 +1332,72 @@ class CalendarSelectView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.author_id
+
+
+class NotificationCalendarSelectView(discord.ui.View):
+    """通知対象カレンダー選択UI"""
+    def __init__(self, bot, guild_id: str, user_id: str,
+                 all_tokens: list, weekday: int, hour: int, minute: int, channel_id: str):
+        super().__init__(timeout=120)
+        self.bot = bot
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.weekday = weekday
+        self.hour = hour
+        self.minute = minute
+        self.channel_id = channel_id
+
+        options = [
+            discord.SelectOption(label="全カレンダー", value="__all__", description="すべてのカレンダーの予定を通知")
+        ]
+        for token in all_tokens:
+            uid = token.get("_doc_id") or token.get("authenticated_by", "")
+            display_name = token.get("display_name") or f"カレンダー（{uid[:8]}...）"
+            is_default = "⭐ " if token.get("is_default") else ""
+            options.append(
+                discord.SelectOption(
+                    label=f"{is_default}{display_name}",
+                    value=uid,
+                    description=token.get("description", "")[:100] if token.get("description") else None,
+                )
+            )
+
+        select = discord.ui.Select(
+            placeholder="通知対象カレンダーを選択...",
+            options=options,
+            min_values=1,
+            max_values=len(options),
+        )
+        select.callback = self.select_callback
+        self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        selected = interaction.data["values"]
+        calendar_owners = [] if "__all__" in selected else selected
+
+        self.bot.db_manager.save_notification_settings(
+            guild_id=self.guild_id,
+            enabled=True,
+            weekday=self.weekday,
+            hour=self.hour,
+            minute=self.minute,
+            channel_id=self.channel_id,
+            calendar_owners=calendar_owners,
+            configured_by=self.user_id,
+        )
+
+        weekday_names = ["月", "火", "水", "木", "金", "土", "日"]
+        cal_text = "全カレンダー" if not calendar_owners else f"{len(calendar_owners)}個のカレンダー"
+        await interaction.response.edit_message(
+            content=(
+                f"✅ 週次通知を設定しました！\n"
+                f"📅 毎週{weekday_names[self.weekday]}曜日 {self.hour:02d}:{self.minute:02d}（JST）\n"
+                f"📢 通知先: <#{self.channel_id}>\n"
+                f"📋 対象: {cal_text}"
+            ),
+            view=None,
+        )
+        self.stop()
 
 
 class MissingTagConfirmView(discord.ui.View):

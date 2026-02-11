@@ -242,6 +242,22 @@ class ConversationManager:
 | description | string | 用途説明（例: "VRCイベント用"） |
 | is_default | boolean | デフォルトカレンダーか（最初の認証時にtrue） |
 
+### 5.5 notification_settings ドキュメント
+
+パス: `guilds/{guild_id}/notification_settings/config`
+
+| フィールド | 型 | 説明 |
+|----------|------|------|
+| enabled | boolean | 通知有効/無効 |
+| weekday | number | 通知曜日（0=月〜6=日） |
+| hour | number | 時刻（JST, 0-23） |
+| minute | number | 分（0-59） |
+| channel_id | string | 通知先チャンネルID |
+| calendar_owners | array | 対象カレンダーオーナー（空=全カレンダー） |
+| last_sent_at | string | 最終送信日時（重複防止） |
+| configured_by | string | 設定者のDiscord User ID |
+| configured_at | string | 設定日時（ISO 8601） |
+
 ## 6. API設計
 
 ### 6.1 Discord スラッシュコマンド
@@ -283,6 +299,14 @@ class ConversationManager:
 | `/カレンダー 認証状態` | なし | manage_guild | 自分の認証方式・状態を表示 |
 | `/カレンダー 設定` | 表示名, カレンダーid, 説明, デフォルト | manage_guild | 自分のカレンダー設定を変更 |
 | `/カレンダー 一覧` | なし | manage_guild | サーバー内の認証済みカレンダー一覧を表示 |
+
+#### 通知管理（`/通知` グループ）
+
+| コマンド | パラメータ | 必要権限 | 説明 |
+|---------|-----------|---------|------|
+| `/通知 設定` | 曜日, 時刻, チャンネル, 分(任意) | manage_guild | 週次通知のスケジュールを設定 |
+| `/通知 停止` | なし | manage_guild | 週次通知を停止 |
+| `/通知 状態` | なし | manage_guild | 通知設定の状態を表示 |
 
 ### 6.2 HTTPエンドポイント
 
