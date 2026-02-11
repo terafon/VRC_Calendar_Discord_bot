@@ -123,7 +123,7 @@ def _oauth_success_html() -> str:
 <style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#2c2f33;color:#fff}
 .card{background:#36393f;padding:2rem 3rem;border-radius:12px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.3)}
 h1{color:#43b581;margin-bottom:.5rem}p{color:#b9bbbe}.note{color:#faa61a;margin-top:1rem;font-weight:bold}</style></head>
-<body><div class="card"><h1>認証成功</h1><p>Google カレンダーとの連携が完了しました。<br>このページを閉じて Discord に戻ってください。</p><p class="note">次のステップ:<br>1. <code>/色 初期設定</code> で繰り返しタイプごとのデフォルト色を設定<br>2. <code>/カレンダー 設定</code> で使用するカレンダーIDを変更（デフォルト: primary）</p></div></body></html>"""
+<body><div class="card"><h1>認証成功</h1><p>Google カレンダーとの連携が完了しました。<br>このページを閉じて Discord に戻ってください。</p><p class="note">次のステップ:<br>1. <code>/カレンダー 設定</code> で使用するカレンダーIDを変更（デフォルト: primary）<br>2. <code>/色 初期設定</code> で繰り返しタイプごとのデフォルト色を設定</p></div></body></html>"""
 
 
 def _oauth_error_html(message: str) -> str:
