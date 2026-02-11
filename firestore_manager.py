@@ -613,6 +613,84 @@ class FirestoreManager:
         ref.delete()
         return data
 
+    # ---- 通知設定 ----
+
+    def get_notification_settings(self, guild_id: str) -> Optional[dict]:
+        """通知設定を取得"""
+        doc = (
+            self._guild_ref(guild_id)
+            .collection("notification_settings")
+            .document("config")
+            .get()
+        )
+        return doc.to_dict() if doc.exists else None
+
+    def save_notification_settings(
+        self,
+        guild_id: str,
+        enabled: bool,
+        weekday: int,
+        hour: int,
+        minute: int,
+        channel_id: str,
+        calendar_owners: List[str],
+        configured_by: str,
+    ):
+        """通知設定を保存"""
+        data = {
+            "enabled": enabled,
+            "weekday": weekday,
+            "hour": hour,
+            "minute": minute,
+            "channel_id": channel_id,
+            "calendar_owners": calendar_owners,
+            "configured_by": configured_by,
+            "configured_at": datetime.utcnow().isoformat(),
+        }
+        (
+            self._guild_ref(guild_id)
+            .collection("notification_settings")
+            .document("config")
+            .set(data, merge=True)
+        )
+
+    def disable_notification(self, guild_id: str):
+        """通知を無効化"""
+        ref = (
+            self._guild_ref(guild_id)
+            .collection("notification_settings")
+            .document("config")
+        )
+        doc = ref.get()
+        if doc.exists:
+            ref.update({"enabled": False})
+
+    def update_notification_last_sent(self, guild_id: str, sent_at: str):
+        """最終通知送信日時を更新"""
+        (
+            self._guild_ref(guild_id)
+            .collection("notification_settings")
+            .document("config")
+            .update({"last_sent_at": sent_at})
+        )
+
+    def get_all_notification_settings(self) -> List[Dict]:
+        """全サーバーの通知設定を取得（collection_groupクエリ）"""
+        docs = (
+            self.db.collection_group("notification_settings")
+            .where(filter=firestore.FieldFilter("enabled", "==", True))
+            .get()
+        )
+        results = []
+        for doc in docs:
+            data = doc.to_dict()
+            # パスから guild_id を抽出: guilds/{guild_id}/notification_settings/config
+            path_parts = doc.reference.path.split("/")
+            if len(path_parts) >= 2:
+                data["guild_id"] = path_parts[1]
+            results.append(data)
+        return results
+
     # ---- private helpers ----
 
     def _get_active_events(self, guild_id: Optional[str] = None) -> List[dict]:

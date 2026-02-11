@@ -185,6 +185,80 @@ class CalendarBot(commands.Bot):
             except Exception as e:
                 print(f"Failed to archive expired thread {thread_id}: {e}")
 
+    @tasks.loop(minutes=1)
+    async def check_scheduled_notifications(self):
+        """サーバーごとの定期通知をチェック・送信"""
+        from datetime import timezone, timedelta as td
+        import traceback
+
+        jst = timezone(td(hours=9))
+        now_jst = datetime.now(jst)
+        current_weekday = now_jst.weekday()
+        current_hour = now_jst.hour
+        current_minute = now_jst.minute
+        today_str = now_jst.strftime("%Y-%m-%d")
+
+        try:
+            all_settings = self.db_manager.get_all_notification_settings()
+        except Exception as e:
+            print(f"Error fetching notification settings: {e}")
+            return
+
+        for settings in all_settings:
+            try:
+                if (settings.get("weekday") != current_weekday or
+                        settings.get("hour") != current_hour or
+                        settings.get("minute") != current_minute):
+                    continue
+
+                # 重複送信防止
+                last_sent = settings.get("last_sent_at", "")
+                if last_sent.startswith(today_str):
+                    continue
+
+                guild_id = settings.get("guild_id")
+                if not guild_id:
+                    continue
+
+                await self._send_scheduled_notification(guild_id, settings)
+            except Exception as e:
+                print(f"Error processing notification for guild {settings.get('guild_id')}: {e}")
+                traceback.print_exc()
+
+    @check_scheduled_notifications.before_loop
+    async def before_check_scheduled_notifications(self):
+        await self.wait_until_ready()
+
+    async def _send_scheduled_notification(self, guild_id: str, settings: dict):
+        """スケジュール通知を送信"""
+        channel_id = settings.get("channel_id")
+        if not channel_id:
+            return
+
+        try:
+            channel = await self.fetch_channel(int(channel_id))
+        except Exception:
+            print(f"Cannot fetch channel {channel_id} for guild {guild_id}")
+            return
+
+        events = self.db_manager.get_this_week_events(guild_id)
+
+        # calendar_owners フィルタ
+        calendar_owners = settings.get("calendar_owners", [])
+        if calendar_owners:
+            events = [e for e in events if e.get("calendar_owner") in calendar_owners]
+
+        embed = create_weekly_embed(events)
+        try:
+            await channel.send(content="🔔 **今週の予定通知**", embed=embed)
+            # 最終送信時刻を更新
+            from datetime import timezone, timedelta as td
+            jst = timezone(td(hours=9))
+            now_str = datetime.now(jst).isoformat()
+            self.db_manager.update_notification_last_sent(guild_id, now_str)
+        except Exception as e:
+            print(f"Failed to send scheduled notification to {channel_id}: {e}")
+
 
 # コマンド定義
 
@@ -713,6 +787,167 @@ def setup_commands(bot: CalendarBot):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     bot.tree.add_command(calendar_group)
+
+    # ---- 通知管理グループ ----
+    notification_group = app_commands.Group(
+        name="通知", description="週次通知の管理",
+        default_permissions=discord.Permissions(manage_guild=True),
+    )
+
+    WEEKDAY_CHOICES = [
+        app_commands.Choice(name="月曜日", value=0),
+        app_commands.Choice(name="火曜日", value=1),
+        app_commands.Choice(name="水曜日", value=2),
+        app_commands.Choice(name="木曜日", value=3),
+        app_commands.Choice(name="金曜日", value=4),
+        app_commands.Choice(name="土曜日", value=5),
+        app_commands.Choice(name="日曜日", value=6),
+    ]
+
+    @notification_group.command(name="設定", description="週次通知のスケジュールを設定します")
+    @app_commands.describe(
+        曜日="通知する曜日",
+        時刻="通知する時刻（0-23、JST）",
+        チャンネル="通知を送信するチャンネル",
+        分="通知する分（0-59、デフォルト: 0）",
+    )
+    @app_commands.choices(曜日=WEEKDAY_CHOICES)
+    async def notification_setup_command(
+        interaction: discord.Interaction,
+        曜日: app_commands.Choice[int],
+        時刻: int,
+        チャンネル: discord.TextChannel,
+        分: int = 0,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        if not interaction.guild_id:
+            await interaction.followup.send("サーバー内で使用してください。", ephemeral=True)
+            return
+
+        if 時刻 < 0 or 時刻 > 23:
+            await interaction.followup.send("時刻は0〜23の範囲で指定してください。", ephemeral=True)
+            return
+
+        if 分 < 0 or 分 > 59:
+            await interaction.followup.send("分は0〜59の範囲で指定してください。", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild_id)
+        user_id = str(interaction.user.id)
+
+        # 複数カレンダーがあるかチェック
+        all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
+        if len(all_tokens) > 1:
+            # カレンダー選択UIを表示
+            view = NotificationCalendarSelectView(
+                bot, guild_id, user_id, all_tokens,
+                曜日.value, 時刻, 分, str(チャンネル.id)
+            )
+            await interaction.followup.send(
+                "通知対象のカレンダーを選択してください（複数選択可）:",
+                view=view, ephemeral=True
+            )
+        else:
+            # カレンダーが1つ以下 → 全カレンダーで設定
+            bot.db_manager.save_notification_settings(
+                guild_id=guild_id,
+                enabled=True,
+                weekday=曜日.value,
+                hour=時刻,
+                minute=分,
+                channel_id=str(チャンネル.id),
+                calendar_owners=[],
+                configured_by=user_id,
+            )
+            weekday_names = ["月", "火", "水", "木", "金", "土", "日"]
+            await interaction.followup.send(
+                f"✅ 週次通知を設定しました！\n"
+                f"📅 毎週{weekday_names[曜日.value]}曜日 {時刻:02d}:{分:02d}（JST）\n"
+                f"📢 通知先: <#{チャンネル.id}>",
+                ephemeral=True
+            )
+
+    @notification_group.command(name="停止", description="週次通知を停止します")
+    async def notification_stop_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if not interaction.guild_id:
+            await interaction.followup.send("サーバー内で使用してください。", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild_id)
+        bot.db_manager.disable_notification(guild_id)
+        await interaction.followup.send("✅ 週次通知を停止しました。", ephemeral=True)
+
+    @notification_group.command(name="状態", description="週次通知の設定状態を表示します")
+    async def notification_status_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if not interaction.guild_id:
+            await interaction.followup.send("サーバー内で使用してください。", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild_id)
+        settings = bot.db_manager.get_notification_settings(guild_id)
+
+        if not settings:
+            await interaction.followup.send("通知は設定されていません。`/通知 設定` で設定してください。", ephemeral=True)
+            return
+
+        weekday_names = ["月", "火", "水", "木", "金", "土", "日"]
+        status_emoji = "✅" if settings.get("enabled") else "⏸️"
+        status_text = "有効" if settings.get("enabled") else "停止中"
+
+        embed = discord.Embed(
+            title="🔔 週次通知設定",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="状態",
+            value=f"{status_emoji} {status_text}",
+            inline=True
+        )
+        embed.add_field(
+            name="スケジュール",
+            value=f"毎週{weekday_names[settings.get('weekday', 0)]}曜日 {settings.get('hour', 0):02d}:{settings.get('minute', 0):02d}（JST）",
+            inline=True
+        )
+        embed.add_field(
+            name="通知先",
+            value=f"<#{settings.get('channel_id', '')}>",
+            inline=True
+        )
+
+        calendar_owners = settings.get("calendar_owners", [])
+        if calendar_owners:
+            owner_mentions = [f"<@{uid}>" for uid in calendar_owners]
+            embed.add_field(
+                name="対象カレンダー",
+                value=", ".join(owner_mentions),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="対象カレンダー",
+                value="全カレンダー",
+                inline=False
+            )
+
+        if settings.get("last_sent_at"):
+            embed.add_field(
+                name="最終送信",
+                value=settings["last_sent_at"],
+                inline=True
+            )
+
+        configured_by = settings.get("configured_by", "")
+        if configured_by:
+            embed.set_footer(text=f"設定者: {configured_by}")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    bot.tree.add_command(notification_group)
 
 
 # ---- ヘルパー関数 ----
@@ -1258,6 +1493,72 @@ class CalendarSelectView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.author_id
+
+
+class NotificationCalendarSelectView(discord.ui.View):
+    """通知対象カレンダー選択UI"""
+    def __init__(self, bot, guild_id: str, user_id: str,
+                 all_tokens: list, weekday: int, hour: int, minute: int, channel_id: str):
+        super().__init__(timeout=120)
+        self.bot = bot
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.weekday = weekday
+        self.hour = hour
+        self.minute = minute
+        self.channel_id = channel_id
+
+        options = [
+            discord.SelectOption(label="全カレンダー", value="__all__", description="すべてのカレンダーの予定を通知")
+        ]
+        for token in all_tokens:
+            uid = token.get("_doc_id") or token.get("authenticated_by", "")
+            display_name = token.get("display_name") or f"カレンダー（{uid[:8]}...）"
+            is_default = "⭐ " if token.get("is_default") else ""
+            options.append(
+                discord.SelectOption(
+                    label=f"{is_default}{display_name}",
+                    value=uid,
+                    description=token.get("description", "")[:100] if token.get("description") else None,
+                )
+            )
+
+        select = discord.ui.Select(
+            placeholder="通知対象カレンダーを選択...",
+            options=options,
+            min_values=1,
+            max_values=len(options),
+        )
+        select.callback = self.select_callback
+        self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        selected = interaction.data["values"]
+        calendar_owners = [] if "__all__" in selected else selected
+
+        self.bot.db_manager.save_notification_settings(
+            guild_id=self.guild_id,
+            enabled=True,
+            weekday=self.weekday,
+            hour=self.hour,
+            minute=self.minute,
+            channel_id=self.channel_id,
+            calendar_owners=calendar_owners,
+            configured_by=self.user_id,
+        )
+
+        weekday_names = ["月", "火", "水", "木", "金", "土", "日"]
+        cal_text = "全カレンダー" if not calendar_owners else f"{len(calendar_owners)}個のカレンダー"
+        await interaction.response.edit_message(
+            content=(
+                f"✅ 週次通知を設定しました！\n"
+                f"📅 毎週{weekday_names[self.weekday]}曜日 {self.hour:02d}:{self.minute:02d}（JST）\n"
+                f"📢 通知先: <#{self.channel_id}>\n"
+                f"📋 対象: {cal_text}"
+            ),
+            view=None,
+        )
+        self.stop()
 
 
 class MissingTagConfirmView(discord.ui.View):
@@ -2201,6 +2502,14 @@ def create_help_embed() -> discord.Embed:
         value=(
             "[使い方ガイド](https://github.com/terafon/VRC_Calendar_Discord_bot/blob/main/docs/USAGE.md)\n"
             "[仕様書](https://github.com/terafon/VRC_Calendar_Discord_bot/blob/main/docs/SPECIFICATION.md)"
+        ), inline=False
+    )
+    embed.add_field(
+        name="/通知",
+        value=(
+            "`/通知 設定` - 週次通知のスケジュールを設定\n"
+            "`/通知 停止` `/通知 状態`\n"
+            "※ サーバー管理権限が必要"
         ), inline=False
     )
     return embed
