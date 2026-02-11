@@ -1010,6 +1010,15 @@ def _auto_assign_color(db_manager: FirestoreManager, guild_id: str, user_id: str
     return db_manager.get_color_preset_by_recurrence(guild_id, user_id, category)
 
 
+def _next_weekday_datetime(weekday: int, time_str: str) -> datetime:
+    """次の該当曜日の日時を返す（今日が該当曜日なら今日）"""
+    now = datetime.now()
+    days_ahead = (weekday - now.weekday()) % 7
+    target = now + timedelta(days=days_ahead)
+    hour, minute = map(int, time_str.split(':'))
+    return target.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
 def _build_event_description(
     raw_description: str = "",
     tags: Optional[List[str]] = None,
@@ -1869,21 +1878,20 @@ async def _handle_add_event_direct(
         return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
 
     if parsed['recurrence'] != 'irregular':
-        dates = RecurrenceCalculator.calculate_dates(
+        rrule = RecurrenceCalculator.to_rrule(
             recurrence=parsed['recurrence'],
-            nth_weeks=parsed.get('nth_weeks'),
+            nth_weeks=parsed.get('nth_weeks') or [],
             weekday=parsed['weekday'],
-            start_date=datetime.now(),
-            months_ahead=3
         )
+        start_dt = _next_weekday_datetime(parsed['weekday'], parsed['time'])
+        end_dt = start_dt + timedelta(minutes=parsed.get('duration_minutes', 60))
 
-        google_events = cal_mgr.create_events(
-            event_name=parsed['event_name'],
-            dates=dates,
-            time_str=parsed['time'],
-            duration_minutes=parsed.get('duration_minutes', 60),
+        google_event_id = cal_mgr.create_recurring_event(
+            summary=parsed['event_name'],
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            rrule=rrule,
             description=cal_description,
-            tags=tags,
             color_id=color_id,
             extended_props={
                 "tags": json.dumps(tags, ensure_ascii=False),
@@ -1891,18 +1899,20 @@ async def _handle_add_event_direct(
                 "x_url": x_url or "",
                 "vrc_group_url": vrc_group_url or "",
                 "official_url": official_url or "",
-            }
+            },
         )
 
-        bot.db_manager.update_google_calendar_events(event_id, google_events)
+        bot.db_manager.update_google_calendar_events(
+            event_id,
+            [{"event_id": google_event_id, "rrule": rrule}]
+        )
 
-        next_date = dates[0] if dates else None
         return (
             f"✅ 予定を登録しました！\n"
             f"📅 {parsed['event_name']}\n"
             f"🔄 {RECURRENCE_TYPES.get(parsed['recurrence'], parsed['recurrence'])}\n"
             f"⏰ {parsed.get('time', '時刻未設定')}\n"
-            f"📌 次回: {next_date.strftime('%Y-%m-%d') if next_date else '未定'}"
+            f"📌 次回: {start_dt.strftime('%Y-%m-%d')}"
         )
     else:
         return (
@@ -1965,49 +1975,119 @@ async def _handle_edit_event_direct(
     bot.db_manager.update_event(event['id'], updates)
 
     if event['google_calendar_events']:
-        google_event_ids = [ge['event_id'] for ge in json.loads(event['google_calendar_events'])]
+        google_cal_data = json.loads(event['google_calendar_events'])
+        google_event_ids = [ge['event_id'] for ge in google_cal_data]
 
-        google_updates = {}
-        if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
-        if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url', 'tags')):
-            raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
+        # 構造的な変更（recurrence/time/weekday/nth_weeks/duration）があるかチェック
+        structural_change = any(k in parsed for k in ('recurrence', 'time', 'weekday', 'nth_weeks', 'duration_minutes'))
+
+        cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
+        if not cal_mgr:
+            return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
+
+        new_recurrence = parsed.get('recurrence', event.get('recurrence'))
+
+        if structural_change and new_recurrence != 'irregular':
+            # 旧イベントを削除
+            for ge in google_cal_data:
+                try:
+                    cal_mgr.service.events().delete(
+                        calendarId=cal_mgr.calendar_id, eventId=ge['event_id']
+                    ).execute()
+                except Exception:
+                    pass
+
+            # 新しいRRULEで再作成
+            new_nth_weeks = parsed.get('nth_weeks') or (
+                json.loads(event['nth_weeks']) if event.get('nth_weeks') else []
+            )
+            new_weekday = parsed.get('weekday', event.get('weekday'))
+            new_time = parsed.get('time', event.get('time'))
+            new_duration = parsed.get('duration_minutes', event.get('duration_minutes', 60))
+            new_event_name = parsed.get('event_name', event['event_name'])
+
+            # 色の解決
+            color_name = updates.get('color_name', event.get('color_name'))
+            color_id = None
+            if color_name and cal_owner:
+                preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
+                color_id = preset['color_id'] if preset else None
+
             edit_tags = updates.get('tags') if 'tags' in updates else (
                 json.loads(event['tags']) if event.get('tags') else []
             )
-            google_updates['description'] = _build_event_description(
+            raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
+            cal_description = _build_event_description(
                 raw_description=raw_desc,
                 tags=edit_tags if edit_tags else None,
                 x_url=updates.get('x_url', event.get('x_url')),
                 vrc_group_url=updates.get('vrc_group_url', event.get('vrc_group_url')),
                 official_url=updates.get('official_url', event.get('official_url')),
             )
-        if 'color_name' in updates:
-            color_name = updates.get('color_name')
-            color_id = None
-            if color_name and cal_owner:
-                preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
-                color_id = preset['color_id'] if preset else None
-            if color_id:
-                google_updates['colorId'] = color_id
 
-        if google_updates:
-            cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
-            if not cal_mgr:
-                return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
-            bot_ext = {}
-            if 'tags' in updates:
-                bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
+            rrule = RecurrenceCalculator.to_rrule(new_recurrence, new_nth_weeks, new_weekday)
+            start_dt = _next_weekday_datetime(new_weekday, new_time)
+            end_dt = start_dt + timedelta(minutes=new_duration)
+
+            google_event_id = cal_mgr.create_recurring_event(
+                summary=new_event_name,
+                start_datetime=start_dt,
+                end_datetime=end_dt,
+                rrule=rrule,
+                description=cal_description,
+                color_id=color_id,
+                extended_props={
+                    "tags": json.dumps(edit_tags or [], ensure_ascii=False),
+                    "color_name": color_name or "",
+                    "x_url": updates.get('x_url', event.get('x_url')) or "",
+                    "vrc_group_url": updates.get('vrc_group_url', event.get('vrc_group_url')) or "",
+                    "official_url": updates.get('official_url', event.get('official_url')) or "",
+                },
+            )
+            bot.db_manager.update_google_calendar_events(
+                event['id'],
+                [{"event_id": google_event_id, "rrule": rrule}]
+            )
+        else:
+            # 属性のみの変更（summary, description, colorId等）
+            google_updates = {}
+            if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
+            if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url', 'tags')):
+                raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
+                edit_tags = updates.get('tags') if 'tags' in updates else (
+                    json.loads(event['tags']) if event.get('tags') else []
+                )
+                google_updates['description'] = _build_event_description(
+                    raw_description=raw_desc,
+                    tags=edit_tags if edit_tags else None,
+                    x_url=updates.get('x_url', event.get('x_url')),
+                    vrc_group_url=updates.get('vrc_group_url', event.get('vrc_group_url')),
+                    official_url=updates.get('official_url', event.get('official_url')),
+                )
             if 'color_name' in updates:
-                bot_ext['color_name'] = updates.get('color_name') or ""
-            if 'x_url' in updates:
-                bot_ext['x_url'] = updates.get('x_url') or ""
-            if 'vrc_group_url' in updates:
-                bot_ext['vrc_group_url'] = updates.get('vrc_group_url') or ""
-            if 'official_url' in updates:
-                bot_ext['official_url'] = updates.get('official_url') or ""
-            if bot_ext:
-                google_updates['extendedProperties'] = {'private': bot_ext}
-            cal_mgr.update_events(google_event_ids, google_updates)
+                color_name = updates.get('color_name')
+                color_id = None
+                if color_name and cal_owner:
+                    preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
+                    color_id = preset['color_id'] if preset else None
+                if color_id:
+                    google_updates['colorId'] = color_id
+
+            if google_updates:
+                bot_ext = {}
+                if 'tags' in updates:
+                    bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
+                if 'color_name' in updates:
+                    bot_ext['color_name'] = updates.get('color_name') or ""
+                if 'x_url' in updates:
+                    bot_ext['x_url'] = updates.get('x_url') or ""
+                if 'vrc_group_url' in updates:
+                    bot_ext['vrc_group_url'] = updates.get('vrc_group_url') or ""
+                if 'official_url' in updates:
+                    bot_ext['official_url'] = updates.get('official_url') or ""
+                if bot_ext:
+                    google_updates['extendedProperties'] = {'private': bot_ext}
+                cal_mgr.update_events(google_event_ids, google_updates)
 
     return f"✅ 予定「{event['event_name']}」を更新しました。"
 
@@ -2103,25 +2183,22 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
     if not cal_mgr:
         return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
 
-    # 不定期以外の場合、Googleカレンダーに登録
+    # 不定期以外の場合、RRULE繰り返しイベントとしてGoogleカレンダーに登録
     if parsed['recurrence'] != 'irregular':
-        # 日付計算
-        dates = RecurrenceCalculator.calculate_dates(
+        rrule = RecurrenceCalculator.to_rrule(
             recurrence=parsed['recurrence'],
-            nth_weeks=parsed.get('nth_weeks'),
+            nth_weeks=parsed.get('nth_weeks') or [],
             weekday=parsed['weekday'],
-            start_date=datetime.now(),
-            months_ahead=3
         )
+        start_dt = _next_weekday_datetime(parsed['weekday'], parsed['time'])
+        end_dt = start_dt + timedelta(minutes=parsed.get('duration_minutes', 60))
 
-        # Googleカレンダーに登録
-        google_events = cal_mgr.create_events(
-            event_name=parsed['event_name'],
-            dates=dates,
-            time_str=parsed['time'],
-            duration_minutes=parsed.get('duration_minutes', 60),
+        google_event_id = cal_mgr.create_recurring_event(
+            summary=parsed['event_name'],
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            rrule=rrule,
             description=cal_description,
-            tags=tags,
             color_id=color_id,
             extended_props={
                 "tags": json.dumps(tags, ensure_ascii=False),
@@ -2129,19 +2206,20 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
                 "x_url": x_url or "",
                 "vrc_group_url": vrc_group_url or "",
                 "official_url": official_url or "",
-            }
+            },
         )
 
-        # Googleイベント情報をDBに保存
-        bot.db_manager.update_google_calendar_events(event_id, google_events)
+        bot.db_manager.update_google_calendar_events(
+            event_id,
+            [{"event_id": google_event_id, "rrule": rrule}]
+        )
 
-        next_date = dates[0] if dates else None
         return (
             f"✅ 予定を登録しました！\n"
             f"📅 {parsed['event_name']}\n"
             f"🔄 {RECURRENCE_TYPES.get(parsed['recurrence'], parsed['recurrence'])}\n"
             f"⏰ {parsed.get('time', '時刻未設定')}\n"
-            f"📌 次回: {next_date.strftime('%Y-%m-%d') if next_date else '未定'}"
+            f"📌 次回: {start_dt.strftime('%Y-%m-%d')}"
         )
     else:
         return (
@@ -2206,49 +2284,119 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
 
     # Googleカレンダー更新
     if event['google_calendar_events']:
-        google_event_ids = [ge['event_id'] for ge in json.loads(event['google_calendar_events'])]
+        google_cal_data = json.loads(event['google_calendar_events'])
+        google_event_ids = [ge['event_id'] for ge in google_cal_data]
 
-        google_updates = {}
-        if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
-        if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url', 'tags')):
-            raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
+        # 構造的な変更（recurrence/time/weekday/nth_weeks/duration）があるかチェック
+        structural_change = any(k in parsed for k in ('recurrence', 'time', 'weekday', 'nth_weeks', 'duration_minutes'))
+
+        cal_mgr = bot.get_calendar_manager_for_user(interaction.guild_id, cal_owner) if cal_owner else None
+        if not cal_mgr:
+            return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
+
+        new_recurrence = parsed.get('recurrence', event.get('recurrence'))
+
+        if structural_change and new_recurrence != 'irregular':
+            # 旧イベントを削除
+            for ge in google_cal_data:
+                try:
+                    cal_mgr.service.events().delete(
+                        calendarId=cal_mgr.calendar_id, eventId=ge['event_id']
+                    ).execute()
+                except Exception:
+                    pass
+
+            # 新しいRRULEで再作成
+            new_nth_weeks = parsed.get('nth_weeks') or (
+                json.loads(event['nth_weeks']) if event.get('nth_weeks') else []
+            )
+            new_weekday = parsed.get('weekday', event.get('weekday'))
+            new_time = parsed.get('time', event.get('time'))
+            new_duration = parsed.get('duration_minutes', event.get('duration_minutes', 60))
+            new_event_name = parsed.get('event_name', event['event_name'])
+
+            # 色の解決
+            color_name = updates.get('color_name', event.get('color_name'))
+            color_id = None
+            if color_name and cal_owner:
+                preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
+                color_id = preset['color_id'] if preset else None
+
             edit_tags = updates.get('tags') if 'tags' in updates else (
                 json.loads(event['tags']) if event.get('tags') else []
             )
-            google_updates['description'] = _build_event_description(
+            raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
+            cal_description = _build_event_description(
                 raw_description=raw_desc,
                 tags=edit_tags if edit_tags else None,
                 x_url=updates.get('x_url', event.get('x_url')),
                 vrc_group_url=updates.get('vrc_group_url', event.get('vrc_group_url')),
                 official_url=updates.get('official_url', event.get('official_url')),
             )
-        if 'color_name' in updates:
-            color_name = updates.get('color_name')
-            color_id = None
-            if color_name and cal_owner:
-                preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
-                color_id = preset['color_id'] if preset else None
-            if color_id:
-                google_updates['colorId'] = color_id
 
-        if google_updates:
-            cal_mgr = bot.get_calendar_manager_for_user(interaction.guild_id, cal_owner) if cal_owner else None
-            if not cal_mgr:
-                return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
-            bot_ext = {}
-            if 'tags' in updates:
-                bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
+            rrule = RecurrenceCalculator.to_rrule(new_recurrence, new_nth_weeks, new_weekday)
+            start_dt = _next_weekday_datetime(new_weekday, new_time)
+            end_dt = start_dt + timedelta(minutes=new_duration)
+
+            google_event_id = cal_mgr.create_recurring_event(
+                summary=new_event_name,
+                start_datetime=start_dt,
+                end_datetime=end_dt,
+                rrule=rrule,
+                description=cal_description,
+                color_id=color_id,
+                extended_props={
+                    "tags": json.dumps(edit_tags or [], ensure_ascii=False),
+                    "color_name": color_name or "",
+                    "x_url": updates.get('x_url', event.get('x_url')) or "",
+                    "vrc_group_url": updates.get('vrc_group_url', event.get('vrc_group_url')) or "",
+                    "official_url": updates.get('official_url', event.get('official_url')) or "",
+                },
+            )
+            bot.db_manager.update_google_calendar_events(
+                event['id'],
+                [{"event_id": google_event_id, "rrule": rrule}]
+            )
+        else:
+            # 属性のみの変更（summary, description, colorId等）
+            google_updates = {}
+            if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
+            if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url', 'tags')):
+                raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
+                edit_tags = updates.get('tags') if 'tags' in updates else (
+                    json.loads(event['tags']) if event.get('tags') else []
+                )
+                google_updates['description'] = _build_event_description(
+                    raw_description=raw_desc,
+                    tags=edit_tags if edit_tags else None,
+                    x_url=updates.get('x_url', event.get('x_url')),
+                    vrc_group_url=updates.get('vrc_group_url', event.get('vrc_group_url')),
+                    official_url=updates.get('official_url', event.get('official_url')),
+                )
             if 'color_name' in updates:
-                bot_ext['color_name'] = updates.get('color_name') or ""
-            if 'x_url' in updates:
-                bot_ext['x_url'] = updates.get('x_url') or ""
-            if 'vrc_group_url' in updates:
-                bot_ext['vrc_group_url'] = updates.get('vrc_group_url') or ""
-            if 'official_url' in updates:
-                bot_ext['official_url'] = updates.get('official_url') or ""
-            if bot_ext:
-                google_updates['extendedProperties'] = {'private': bot_ext}
-            cal_mgr.update_events(google_event_ids, google_updates)
+                color_name = updates.get('color_name')
+                color_id = None
+                if color_name and cal_owner:
+                    preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
+                    color_id = preset['color_id'] if preset else None
+                if color_id:
+                    google_updates['colorId'] = color_id
+
+            if google_updates:
+                bot_ext = {}
+                if 'tags' in updates:
+                    bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
+                if 'color_name' in updates:
+                    bot_ext['color_name'] = updates.get('color_name') or ""
+                if 'x_url' in updates:
+                    bot_ext['x_url'] = updates.get('x_url') or ""
+                if 'vrc_group_url' in updates:
+                    bot_ext['vrc_group_url'] = updates.get('vrc_group_url') or ""
+                if 'official_url' in updates:
+                    bot_ext['official_url'] = updates.get('official_url') or ""
+                if bot_ext:
+                    google_updates['extendedProperties'] = {'private': bot_ext}
+                cal_mgr.update_events(google_event_ids, google_updates)
 
     return f"✅ 予定「{event['event_name']}」を更新しました。"
 

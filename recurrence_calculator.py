@@ -3,6 +3,31 @@ from typing import List, Optional
 import calendar
 
 class RecurrenceCalculator:
+    WEEKDAY_MAP = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+
+    @staticmethod
+    def to_rrule(recurrence: str, nth_weeks: List[int], weekday: int) -> str:
+        """繰り返しパターンからRRULE文字列を生成
+
+        Args:
+            recurrence: 繰り返しタイプ (weekly, biweekly, nth_week)
+            nth_weeks: 第n週のリスト（nth_weekの場合）
+            weekday: 曜日（0=月, 6=日）
+
+        Returns:
+            RRULE文字列
+        """
+        day = RecurrenceCalculator.WEEKDAY_MAP[weekday]
+        if recurrence == "weekly":
+            return f"RRULE:FREQ=WEEKLY;BYDAY={day}"
+        elif recurrence == "biweekly":
+            return f"RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY={day}"
+        elif recurrence == "nth_week":
+            byday = ",".join(f"{n}{day}" for n in nth_weeks)
+            return f"RRULE:FREQ=MONTHLY;BYDAY={byday}"
+        else:
+            raise ValueError(f"Unsupported recurrence for RRULE: {recurrence}")
+
     @staticmethod
     def calculate_dates(
         recurrence: str,
