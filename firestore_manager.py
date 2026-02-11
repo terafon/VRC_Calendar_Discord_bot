@@ -65,6 +65,7 @@ class FirestoreManager:
         official_url: Optional[str] = None,
         discord_channel_id: str = "",
         created_by: str = "",
+        calendar_owner: str = "",
     ) -> int:
         """予定を追加"""
         event_id = self._next_id("events")
@@ -89,6 +90,7 @@ class FirestoreManager:
             "google_calendar_events": None,
             "discord_channel_id": discord_channel_id,
             "created_by": created_by,
+            "calendar_owner": calendar_owner,
             "created_at": now,
             "updated_at": now,
             "is_active": True,
@@ -481,38 +483,117 @@ class FirestoreManager:
         calendar_id: str,
         authenticated_by: str,
         authenticated_at: str,
+        display_name: str = "",
+        description: str = "",
     ):
-        """OAuth トークンを保存"""
-        self._guild_ref(guild_id).collection("oauth_tokens").document("google").set({
+        """OAuth トークンを保存（ユーザーごとのドキュメント）"""
+        doc_ref = self._guild_ref(guild_id).collection("oauth_tokens").document(authenticated_by)
+        existing = doc_ref.get()
+
+        data = {
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_expiry": token_expiry,
             "calendar_id": calendar_id,
             "authenticated_by": authenticated_by,
             "authenticated_at": authenticated_at,
-        })
+        }
 
-    def get_oauth_tokens(self, guild_id: str) -> Optional[dict]:
-        """OAuth トークンを取得"""
-        doc = self._guild_ref(guild_id).collection("oauth_tokens").document("google").get()
-        return doc.to_dict() if doc.exists else None
+        if existing.exists:
+            # 再認証: トークンのみ更新、表示名等は保持
+            doc_ref.update(data)
+        else:
+            # 新規: display_name, description, is_default を設定
+            all_tokens = self.get_all_oauth_tokens(guild_id)
+            data["display_name"] = display_name
+            data["description"] = description
+            data["is_default"] = len(all_tokens) == 0  # 最初のカレンダーならデフォルト
+            doc_ref.set(data)
 
-    def update_oauth_access_token(self, guild_id: str, access_token: str, token_expiry: str):
+    def get_oauth_tokens(self, guild_id: str, user_id: str) -> Optional[dict]:
+        """OAuth トークンを取得（ユーザーID指定）"""
+        # 1. user_id ドキュメントを試行
+        doc = self._guild_ref(guild_id).collection("oauth_tokens").document(user_id).get()
+        if doc.exists:
+            data = doc.to_dict()
+            data["_doc_id"] = doc.id
+            return data
+        # 2. レガシー "google" ドキュメントをチェック
+        legacy = self._guild_ref(guild_id).collection("oauth_tokens").document("google").get()
+        if legacy.exists:
+            data = legacy.to_dict()
+            if data.get("authenticated_by") == user_id:
+                # マイグレーション: display_name等を追加してコピー
+                data.setdefault("display_name", "")
+                data.setdefault("description", "")
+                data.setdefault("is_default", True)
+                self._guild_ref(guild_id).collection("oauth_tokens").document(user_id).set(data)
+                legacy.reference.delete()
+                data["_doc_id"] = user_id
+                return data
+        return None
+
+    def get_all_oauth_tokens(self, guild_id: str) -> List[dict]:
+        """サーバー内の全認証済みOAuthトークンを取得"""
+        docs = self._guild_ref(guild_id).collection("oauth_tokens").get()
+        results = []
+        for doc in docs:
+            data = doc.to_dict()
+            data["_doc_id"] = doc.id
+            results.append(data)
+        return results
+
+    def get_default_oauth_tokens(self, guild_id: str) -> Optional[dict]:
+        """デフォルトカレンダーのOAuthトークンを取得"""
+        docs = (self._guild_ref(guild_id).collection("oauth_tokens")
+                .where(filter=firestore.FieldFilter("is_default", "==", True))
+                .limit(1).get())
+        for doc in docs:
+            data = doc.to_dict()
+            data["_doc_id"] = doc.id
+            return data
+        return None
+
+    def get_oauth_tokens_by_display_name(self, guild_id: str, display_name: str) -> Optional[dict]:
+        """表示名でカレンダーのOAuthトークンを検索"""
+        docs = (self._guild_ref(guild_id).collection("oauth_tokens")
+                .where(filter=firestore.FieldFilter("display_name", "==", display_name))
+                .limit(1).get())
+        for doc in docs:
+            data = doc.to_dict()
+            data["_doc_id"] = doc.id
+            return data
+        return None
+
+    def update_oauth_settings(self, guild_id: str, user_id: str, **kwargs):
+        """カレンダー設定を更新（display_name, description, calendar_id, is_default）"""
+        doc_ref = self._guild_ref(guild_id).collection("oauth_tokens").document(user_id)
+        updates = {k: v for k, v in kwargs.items() if v is not None}
+        if updates.get("is_default"):
+            # 他のデフォルトを解除
+            all_docs = self._guild_ref(guild_id).collection("oauth_tokens").get()
+            for d in all_docs:
+                if d.id != user_id:
+                    d.reference.update({"is_default": False})
+        if updates:
+            doc_ref.update(updates)
+
+    def update_oauth_access_token(self, guild_id: str, user_id: str, access_token: str, token_expiry: str):
         """リフレッシュ後のアクセストークンを更新"""
-        self._guild_ref(guild_id).collection("oauth_tokens").document("google").update({
+        self._guild_ref(guild_id).collection("oauth_tokens").document(user_id).update({
             "access_token": access_token,
             "token_expiry": token_expiry,
         })
 
-    def update_oauth_calendar_id(self, guild_id: str, calendar_id: str):
+    def update_oauth_calendar_id(self, guild_id: str, user_id: str, calendar_id: str):
         """OAuth のカレンダーIDを更新"""
-        self._guild_ref(guild_id).collection("oauth_tokens").document("google").update({
+        self._guild_ref(guild_id).collection("oauth_tokens").document(user_id).update({
             "calendar_id": calendar_id,
         })
 
-    def delete_oauth_tokens(self, guild_id: str):
+    def delete_oauth_tokens(self, guild_id: str, user_id: str):
         """OAuth トークンを削除（認証解除）"""
-        self._guild_ref(guild_id).collection("oauth_tokens").document("google").delete()
+        self._guild_ref(guild_id).collection("oauth_tokens").document(user_id).delete()
 
     def save_oauth_state(self, state: str, guild_id: str, user_id: str):
         """CSRF state を保存"""

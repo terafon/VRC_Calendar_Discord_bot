@@ -89,18 +89,19 @@ class CalendarBot(commands.Bot):
         self.oauth_handler = oauth_handler
         self.conversation_manager = ConversationManager()
 
-    def get_calendar_manager_for_guild(self, guild_id: Optional[int]) -> Optional[GoogleCalendarManager]:
+    def get_calendar_manager_for_user(self, guild_id: Optional[int], user_id: str) -> Optional[GoogleCalendarManager]:
+        """ユーザーのOAuthトークンでカレンダーマネージャを取得"""
         if guild_id is None:
             return None
 
         guild_id_str = str(guild_id)
-        oauth_tokens = self.db_manager.get_oauth_tokens(guild_id_str)
+        oauth_tokens = self.db_manager.get_oauth_tokens(guild_id_str, user_id)
         if not oauth_tokens or not self.oauth_handler:
             return None
 
         try:
             def on_token_refresh(new_access_token: str, new_expiry: str):
-                self.db_manager.update_oauth_access_token(guild_id_str, new_access_token, new_expiry)
+                self.db_manager.update_oauth_access_token(guild_id_str, user_id, new_access_token, new_expiry)
 
             return GoogleCalendarManager(
                 access_token=oauth_tokens['access_token'],
@@ -112,22 +113,30 @@ class CalendarBot(commands.Bot):
                 on_token_refresh=on_token_refresh,
             )
         except Exception as e:
-            print(f"OAuth token error for guild {guild_id_str}: {e}")
+            print(f"OAuth token error for guild {guild_id_str}, user {user_id}: {e}")
             return None
 
     def _get_server_context(self, guild_id: str) -> Dict[str, Any]:
-        """サーバーのタグ・色・既存予定名の情報を取得する"""
+        """サーバーのタグ・色・既存予定名・カレンダーの情報を取得する"""
         tag_groups = self.db_manager.list_tag_groups(guild_id)
         tags = self.db_manager.list_tags(guild_id)
         color_presets = self.db_manager.list_color_presets(guild_id)
         active_events = self.db_manager.get_all_active_events(guild_id)
         event_names = [e['event_name'] for e in active_events]
 
+        all_tokens = self.db_manager.get_all_oauth_tokens(guild_id)
+        calendars = [{
+            "display_name": t.get("display_name") or f"<@{t.get('authenticated_by', '?')}>",
+            "description": t.get("description", ""),
+            "is_default": t.get("is_default", False),
+        } for t in all_tokens]
+
         return {
             "tag_groups": tag_groups,
             "tags": tags,
             "color_presets": color_presets,
             "event_names": event_names,
+            "calendars": calendars,
         }
 
     async def setup_hook(self):
@@ -145,8 +154,8 @@ class CalendarBot(commands.Bot):
         for guild in self.guilds:
             guild_id = str(guild.id)
             try:
-                oauth_tokens = self.db_manager.get_oauth_tokens(guild_id)
-                if oauth_tokens:
+                all_tokens = self.db_manager.get_all_oauth_tokens(guild_id)
+                if all_tokens:
                     guild_doc = self.db_manager._guild_ref(guild_id).get()
                     if guild_doc.exists:
                         data = guild_doc.to_dict()
@@ -581,51 +590,124 @@ def setup_commands(bot: CalendarBot):
         embed.set_footer(text="このリンクは一度だけ使用できます")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @calendar_group.command(name="認証解除", description="Google OAuth認証を解除します")
+    @calendar_group.command(name="認証解除", description="自分のGoogle OAuth認証を解除します")
     async def calendar_oauth_revoke_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id)
-        tokens = bot.db_manager.get_oauth_tokens(guild_id)
+        user_id = str(interaction.user.id)
+        tokens = bot.db_manager.get_oauth_tokens(guild_id, user_id)
         if not tokens:
-            await interaction.followup.send("ℹ️ OAuth 認証は設定されていません。", ephemeral=True)
+            await interaction.followup.send("ℹ️ あなたの OAuth 認証は設定されていません。", ephemeral=True)
             return
 
-        bot.db_manager.delete_oauth_tokens(guild_id)
-        await interaction.followup.send("✅ Google OAuth 認証を解除しました。", ephemeral=True)
+        bot.db_manager.delete_oauth_tokens(guild_id, user_id)
+        await interaction.followup.send("✅ あなたの Google OAuth 認証を解除しました。", ephemeral=True)
 
-    @calendar_group.command(name="認証状態", description="カレンダーの認証状態を表示します")
+    @calendar_group.command(name="認証状態", description="自分のカレンダー認証状態を表示します")
     async def calendar_oauth_status_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id)
-        oauth_tokens = bot.db_manager.get_oauth_tokens(guild_id)
+        user_id = str(interaction.user.id)
+        oauth_tokens = bot.db_manager.get_oauth_tokens(guild_id, user_id)
 
         embed = discord.Embed(title="カレンダー認証状態", color=discord.Color.blue())
 
         if oauth_tokens:
-            authenticated_by = oauth_tokens.get('authenticated_by', '不明')
             authenticated_at = oauth_tokens.get('authenticated_at', '不明')
             calendar_id = oauth_tokens.get('calendar_id', 'primary')
+            display_name = oauth_tokens.get('display_name', '未設定')
+            is_default = "⭐ はい" if oauth_tokens.get('is_default') else "いいえ"
             embed.add_field(name="方式", value="OAuth 2.0（ユーザー認証）", inline=False)
-            embed.add_field(name="認証者", value=f"<@{authenticated_by}>", inline=True)
+            embed.add_field(name="表示名", value=display_name or "未設定", inline=True)
             embed.add_field(name="認証日時", value=authenticated_at, inline=True)
             embed.add_field(name="カレンダーID", value=calendar_id, inline=False)
+            embed.add_field(name="デフォルト", value=is_default, inline=True)
+            if oauth_tokens.get('description'):
+                embed.add_field(name="説明", value=oauth_tokens['description'], inline=True)
         else:
             embed.add_field(name="状態", value="未認証", inline=False)
             embed.add_field(name="説明", value="`/カレンダー 認証` を実行して OAuth 認証を行ってください。", inline=False)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @calendar_group.command(name="設定", description="使用するカレンダーIDを設定します")
-    @app_commands.describe(calendar_id="GoogleカレンダーID（例: abc123@group.calendar.google.com）")
-    async def calendar_set_command(interaction: discord.Interaction, calendar_id: str):
+    @calendar_group.command(name="設定", description="自分のカレンダー設定を変更します")
+    @app_commands.describe(
+        表示名="カレンダーの表示名",
+        カレンダーid="GoogleカレンダーID",
+        説明="カレンダーの用途説明",
+        デフォルト="このカレンダーをデフォルトにする"
+    )
+    async def calendar_set_command(interaction: discord.Interaction,
+                                   表示名: Optional[str] = None,
+                                   カレンダーid: Optional[str] = None,
+                                   説明: Optional[str] = None,
+                                   デフォルト: Optional[bool] = None):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id)
-        oauth_tokens = bot.db_manager.get_oauth_tokens(guild_id)
+        user_id = str(interaction.user.id)
+        oauth_tokens = bot.db_manager.get_oauth_tokens(guild_id, user_id)
         if not oauth_tokens:
             await interaction.followup.send("❌ OAuth 認証がされていません。先に `/カレンダー 認証` を実行してください。", ephemeral=True)
             return
-        bot.db_manager.update_oauth_calendar_id(guild_id, calendar_id)
-        await interaction.followup.send(f"✅ カレンダーIDを `{calendar_id}` に設定しました。", ephemeral=True)
+
+        if 表示名 is None and カレンダーid is None and 説明 is None and デフォルト is None:
+            await interaction.followup.send("❌ 変更する項目を少なくとも1つ指定してください。", ephemeral=True)
+            return
+
+        bot.db_manager.update_oauth_settings(
+            guild_id, user_id,
+            display_name=表示名, calendar_id=カレンダーid,
+            description=説明, is_default=デフォルト
+        )
+
+        changes = []
+        if 表示名 is not None:
+            changes.append(f"表示名: `{表示名}`")
+        if カレンダーid is not None:
+            changes.append(f"カレンダーID: `{カレンダーid}`")
+        if 説明 is not None:
+            changes.append(f"説明: `{説明}`")
+        if デフォルト is not None:
+            changes.append(f"デフォルト: {'はい' if デフォルト else 'いいえ'}")
+
+        await interaction.followup.send(
+            f"✅ カレンダー設定を更新しました。\n" + "\n".join(f"• {c}" for c in changes),
+            ephemeral=True
+        )
+
+    @calendar_group.command(name="一覧", description="サーバー内の認証済みカレンダー一覧を表示します")
+    async def calendar_list_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id)
+        all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
+
+        if not all_tokens:
+            embed = discord.Embed(
+                title="📅 認証済みカレンダー一覧",
+                description="認証済みのカレンダーがありません。\n`/カレンダー 認証` でカレンダーを連携してください。",
+                color=discord.Color.blue(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="📅 認証済みカレンダー一覧",
+            color=discord.Color.blue(),
+        )
+        for token in all_tokens:
+            user_id = token.get("_doc_id") or token.get("authenticated_by")
+            display_name = token.get("display_name") or "未設定"
+            calendar_id = token.get("calendar_id", "primary")
+            is_default = "⭐ " if token.get("is_default") else ""
+            desc = token.get("description", "")
+            desc_line = f"\n説明: {desc}" if desc else ""
+            embed.add_field(
+                name=f"{is_default}{display_name}",
+                value=f"認証者: <@{user_id}>\nカレンダーID: `{calendar_id}`{desc_line}",
+                inline=False,
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     bot.tree.add_command(calendar_group)
 
@@ -688,6 +770,7 @@ def _event_data_to_parsed(event_data: Dict[str, Any], action: str) -> Dict[str, 
         "x_url": "x_url",
         "vrc_group_url": "vrc_group_url",
         "official_url": "official_url",
+        "calendar_name": "calendar_name",
     }
     for src, dst in field_mapping.items():
         val = event_data.get(src)
@@ -794,6 +877,28 @@ async def _confirm_and_handle_in_thread(
                     await thread.send(
                         f"✅ 色プリセット「{category_label}」（{color_info.get('name', '?')} / colorId {color_select_view.selected_color_id}）を登録しました。"
                     )
+
+    # 未登録タグの確認・自動作成（add/edit でタグがある場合）
+    if action in ("add", "edit"):
+        tags = parsed.get('tags', []) or []
+        if tags:
+            resolved_tags = await _resolve_missing_tags(
+                bot, guild_id, tags, author.id, thread.send
+            )
+            parsed['tags'] = resolved_tags
+
+    # カレンダー選択（複数ある場合のみUI表示、addのみ）
+    if action == "add":
+        all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
+        if len(all_tokens) > 1 and not parsed.get('calendar_name'):
+            cal_view = CalendarSelectView(author.id, all_tokens)
+            await thread.send("📅 どのカレンダーに登録しますか？", view=cal_view)
+            await cal_view.wait()
+            if cal_view.selected_calendar_owner:
+                parsed['calendar_name'] = cal_view.selected_display_name
+                parsed['_calendar_owner'] = cal_view.selected_calendar_owner
+        elif len(all_tokens) == 1:
+            parsed['_calendar_owner'] = all_tokens[0].get('_doc_id') or all_tokens[0].get('authenticated_by')
 
     if action == "add":
         summary = build_event_summary(parsed)
@@ -1012,8 +1117,8 @@ class ColorSetupView(discord.ui.View):
         self.bot.db_manager.initialize_default_color_presets(self.guild_id, presets_data)
 
         # 凡例イベント更新
-        cal_mgr = self.bot.get_calendar_manager_for_guild(int(self.guild_id))
-        if cal_mgr:
+        all_tokens = self.bot.db_manager.get_all_oauth_tokens(self.guild_id)
+        if all_tokens:
             await _update_legend_event_by_guild(self.bot, self.guild_id)
 
         summary_lines = []
@@ -1091,6 +1196,200 @@ class ColorSelectForEventView(discord.ui.View):
         return interaction.user.id == self.author_id
 
 
+def _resolve_calendar_owner(bot: CalendarBot, guild_id: str, calendar_name: str = None) -> Optional[dict]:
+    """calendar_nameからOAuthトークン情報を解決する"""
+    if calendar_name:
+        tokens = bot.db_manager.get_oauth_tokens_by_display_name(guild_id, calendar_name)
+        if tokens:
+            return tokens
+    # calendar_name未指定 or 見つからない → デフォルト
+    default = bot.db_manager.get_default_oauth_tokens(guild_id)
+    if default:
+        return default
+    # デフォルトなし → 最初の1つ
+    all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
+    return all_tokens[0] if all_tokens else None
+
+
+class CalendarSelectView(discord.ui.View):
+    """確認画面用のカレンダー選択ドロップダウン"""
+
+    def __init__(self, author_id: int, calendars: List[dict], default_name: str = ""):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.selected_calendar_owner: Optional[str] = None
+        self.selected_display_name: Optional[str] = None
+
+        options = []
+        for cal in calendars:
+            doc_id = cal.get("_doc_id") or cal.get("authenticated_by", "")
+            display = cal.get("display_name") or f"<@{doc_id}>"
+            desc = cal.get("description", "") or ""
+            is_default = cal.get("is_default", False)
+            label = f"{display}{'（デフォルト）' if is_default else ''}"
+            options.append(discord.SelectOption(
+                label=label[:100],
+                value=doc_id,
+                description=desc[:100] if desc else None,
+                default=(display == default_name) if default_name else is_default,
+            ))
+
+        select = discord.ui.Select(
+            placeholder="登録先カレンダーを選択してください",
+            options=options,
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return
+        self.selected_calendar_owner = interaction.data["values"][0]
+        # 表示名を復元
+        for opt in self.children[0].options:
+            if opt.value == self.selected_calendar_owner:
+                self.selected_display_name = opt.label.replace("（デフォルト）", "").strip()
+                break
+        await interaction.response.defer()
+        self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id
+
+
+class MissingTagConfirmView(discord.ui.View):
+    """未登録タグの自動作成確認"""
+
+    def __init__(self, author_id: int, missing_tags: List[str]):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.missing_tags = missing_tags
+        self.value: Optional[str] = None  # "create" or "skip"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id
+
+    @discord.ui.button(label="作成して続行", style=discord.ButtonStyle.green)
+    async def create_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = "create"
+        await interaction.response.defer()
+        self.stop()
+
+    @discord.ui.button(label="タグなしで続行", style=discord.ButtonStyle.grey)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = "skip"
+        await interaction.response.defer()
+        self.stop()
+
+
+class TagGroupSelectView(discord.ui.View):
+    """タグのグループ割当選択"""
+
+    def __init__(self, author_id: int, groups: List[Dict[str, Any]], tag_name: str):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.tag_name = tag_name
+        self.selected_group_id: Optional[int] = None
+
+        options = [
+            discord.SelectOption(
+                label=group['name'],
+                value=str(group['id']),
+                description=(group.get('description', '') or '')[:50],
+            )
+            for group in groups
+        ]
+        select = discord.ui.Select(
+            placeholder=f"「{tag_name}」の追加先グループを選択",
+            options=options,
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            return
+        self.selected_group_id = int(interaction.data["values"][0])
+        await interaction.response.defer()
+        self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id
+
+
+# ---- 未登録タグ自動作成ヘルパー ----
+
+async def _resolve_missing_tags(
+    bot: CalendarBot,
+    guild_id: str,
+    tags: List[str],
+    author_id: int,
+    send_func,
+) -> List[str]:
+    """未登録タグを検出し、ユーザー確認後に自動作成する。
+
+    Args:
+        send_func: メッセージ送信用callable（thread.send または interaction.followup.send ラッパー）
+    Returns:
+        解決済みタグリスト（未登録タグを除外またはDB登録済み）
+    """
+    if not tags:
+        return tags
+
+    missing_tags = bot.db_manager.find_missing_tags(guild_id, tags)
+    if not missing_tags:
+        return tags
+
+    # 確認ダイアログ
+    view = MissingTagConfirmView(author_id, missing_tags)
+    await send_func(
+        f"🏷️ 以下のタグは未登録です:\n"
+        f"• {'、'.join(missing_tags)}\n\n"
+        f"自動作成しますか？",
+        view=view,
+    )
+    await view.wait()
+
+    if view.value != "create":
+        # タグなしで続行: 未登録タグを除外
+        return [t for t in tags if t not in missing_tags]
+
+    # グループを取得して割当
+    groups = bot.db_manager.list_tag_groups(guild_id)
+
+    if not groups:
+        # デフォルトグループを作成
+        group_id = bot.db_manager.add_tag_group(guild_id, "一般", "自動作成されたタググループ")
+        for tag_name in missing_tags:
+            bot.db_manager.add_tag(guild_id, group_id, tag_name)
+        await send_func(f"✅ タググループ「一般」を作成し、タグ {'、'.join(missing_tags)} を追加しました。")
+    elif len(groups) == 1:
+        group = groups[0]
+        for tag_name in missing_tags:
+            bot.db_manager.add_tag(guild_id, group['id'], tag_name)
+        await send_func(f"✅ タグ {'、'.join(missing_tags)} をグループ「{group['name']}」に追加しました。")
+    else:
+        # 複数グループ — タグごとにグループを選択
+        for tag_name in missing_tags:
+            select_view = TagGroupSelectView(author_id, groups, tag_name)
+            await send_func(
+                f"🏷️ タグ「{tag_name}」をどのグループに追加しますか？",
+                view=select_view,
+            )
+            await select_view.wait()
+            if select_view.selected_group_id:
+                bot.db_manager.add_tag(guild_id, select_view.selected_group_id, tag_name)
+                group_name = next(
+                    (g['name'] for g in groups if g['id'] == select_view.selected_group_id), "?"
+                )
+                await send_func(f"✅ タグ「{tag_name}」をグループ「{group_name}」に追加しました。")
+            else:
+                # タイムアウト — このタグをスキップ
+                tags = [t for t in tags if t != tag_name]
+
+    return tags
+
+
 # ---- ダイレクト実行関数（interaction不要版） ----
 
 async def _handle_add_event_direct(
@@ -1126,6 +1425,12 @@ async def _handle_add_event_direct(
     if url_section:
         cal_description = f"{raw_description}\n\n{url_section}".strip()
 
+    # カレンダーオーナー解決
+    calendar_owner = parsed.get('_calendar_owner')
+    if not calendar_owner:
+        token_info = _resolve_calendar_owner(bot, guild_id, parsed.get('calendar_name'))
+        calendar_owner = token_info.get('_doc_id') or token_info.get('authenticated_by') if token_info else None
+
     event_id = bot.db_manager.add_event(
         guild_id=guild_id,
         event_name=parsed['event_name'],
@@ -1142,10 +1447,14 @@ async def _handle_add_event_direct(
         vrc_group_url=vrc_group_url,
         official_url=official_url,
         discord_channel_id=str(channel_id),
-        created_by=str(user_id)
+        created_by=str(user_id),
+        calendar_owner=calendar_owner or str(user_id),
     )
 
-    cal_mgr = bot.get_calendar_manager_for_guild(int(guild_id))
+    if not calendar_owner:
+        return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
+
+    cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), calendar_owner)
     if not cal_mgr:
         return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
 
@@ -1269,9 +1578,11 @@ async def _handle_edit_event_direct(
                 google_updates['colorId'] = color_id
 
         if google_updates:
-            cal_mgr = bot.get_calendar_manager_for_guild(int(guild_id))
+            # イベントのカレンダーオーナーを使用
+            cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+            cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
             if not cal_mgr:
-                return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
+                return f"❌ この予定が登録されたカレンダー（{cal_owner}）の認証が無効です。"
             bot_ext = {}
             if 'tags' in updates:
                 bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
@@ -1303,9 +1614,10 @@ async def _handle_delete_event_direct(
     event = events[0]
 
     if event['google_calendar_events']:
-        cal_mgr = bot.get_calendar_manager_for_guild(int(guild_id))
+        cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+        cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
         if not cal_mgr:
-            return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
+            return f"❌ この予定が登録されたカレンダー（{cal_owner}）の認証が無効です。"
         google_event_ids = [ge['event_id'] for ge in json.loads(event['google_calendar_events'])]
         cal_mgr.delete_events(google_event_ids)
 
@@ -1345,6 +1657,12 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
     if url_section:
         cal_description = f"{raw_description}\n\n{url_section}".strip()
 
+    # カレンダーオーナー解決
+    calendar_owner = parsed.get('_calendar_owner')
+    if not calendar_owner:
+        token_info = _resolve_calendar_owner(bot, guild_id, parsed.get('calendar_name'))
+        calendar_owner = token_info.get('_doc_id') or token_info.get('authenticated_by') if token_info else None
+
     # データベースに保存
     event_id = bot.db_manager.add_event(
         guild_id=guild_id,
@@ -1362,10 +1680,14 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
         vrc_group_url=vrc_group_url,
         official_url=official_url,
         discord_channel_id=str(interaction.channel_id),
-        created_by=str(interaction.user.id)
+        created_by=str(interaction.user.id),
+        calendar_owner=calendar_owner or str(interaction.user.id),
     )
 
-    cal_mgr = bot.get_calendar_manager_for_guild(interaction.guild_id)
+    if not calendar_owner:
+        return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
+
+    cal_mgr = bot.get_calendar_manager_for_user(interaction.guild_id, calendar_owner)
     if not cal_mgr:
         return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
 
@@ -1495,9 +1817,10 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
                 google_updates['colorId'] = color_id
 
         if google_updates:
-            cal_mgr = bot.get_calendar_manager_for_guild(interaction.guild_id)
+            cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+            cal_mgr = bot.get_calendar_manager_for_user(interaction.guild_id, cal_owner) if cal_owner else None
             if not cal_mgr:
-                return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
+                return f"❌ この予定が登録されたカレンダー（{cal_owner}）の認証が無効です。"
             bot_ext = {}
             if 'tags' in updates:
                 bot_ext['tags'] = json.dumps(updates['tags'], ensure_ascii=False)
@@ -1527,9 +1850,10 @@ async def handle_delete_event(bot: CalendarBot, interaction: discord.Interaction
 
     # Googleカレンダーから削除
     if event['google_calendar_events']:
-        cal_mgr = bot.get_calendar_manager_for_guild(interaction.guild_id)
+        cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+        cal_mgr = bot.get_calendar_manager_for_user(interaction.guild_id, cal_owner) if cal_owner else None
         if not cal_mgr:
-            return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
+            return f"❌ この予定が登録されたカレンダー（{cal_owner}）の認証が無効です。"
         google_event_ids = [ge['event_id'] for ge in json.loads(event['google_calendar_events'])]
         cal_mgr.delete_events(google_event_ids)
 
@@ -1609,6 +1933,7 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
         color_display = f"{color_name}（自動割当）"
     else:
         color_display = color_name
+    calendar_name = parsed.get('calendar_name') or 'デフォルト'
     return (
         f"予定名: {parsed.get('event_name', '未設定')}\n"
         f"繰り返し: {RECURRENCE_TYPES.get(parsed.get('recurrence'), parsed.get('recurrence'))} {nth_str}\n"
@@ -1616,6 +1941,7 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
         f"時刻: {parsed.get('time', '未設定')}\n"
         f"所要時間: {parsed.get('duration_minutes', 60)}分\n"
         f"色: {color_display}\n"
+        f"カレンダー: {calendar_name}\n"
         f"タグ: {', '.join(tags) if tags else 'なし'}\n"
         f"X URL: {parsed.get('x_url') or 'なし'}\n"
         f"VRCグループURL: {parsed.get('vrc_group_url') or 'なし'}\n"
@@ -1624,6 +1950,30 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
     )
 
 async def confirm_and_handle_add_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> Optional[str]:
+    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
+    # 未登録タグの確認・自動作成
+    tags = parsed.get('tags', []) or []
+    if tags:
+        async def _send_ephemeral(content, **kwargs):
+            return await interaction.followup.send(content, ephemeral=True, **kwargs)
+        resolved_tags = await _resolve_missing_tags(
+            bot, guild_id, tags, interaction.user.id, _send_ephemeral
+        )
+        parsed['tags'] = resolved_tags
+
+    # カレンダー選択（複数ある場合のみ）
+    all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
+    if len(all_tokens) > 1 and not parsed.get('calendar_name'):
+        cal_view = CalendarSelectView(interaction.user.id, all_tokens)
+        await interaction.followup.send("📅 どのカレンダーに登録しますか？", view=cal_view, ephemeral=True)
+        await cal_view.wait()
+        if cal_view.selected_calendar_owner:
+            parsed['calendar_name'] = cal_view.selected_display_name
+            parsed['_calendar_owner'] = cal_view.selected_calendar_owner
+    elif len(all_tokens) == 1:
+        parsed['_calendar_owner'] = all_tokens[0].get('_doc_id') or all_tokens[0].get('authenticated_by')
+
     summary = build_event_summary(parsed)
     ok = await confirm_action(interaction, "予定追加の確認", summary)
     if not ok:
@@ -1632,6 +1982,18 @@ async def confirm_and_handle_add_event(bot: CalendarBot, interaction: discord.In
 
 async def confirm_and_handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> Optional[str]:
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
+    # 未登録タグの確認・自動作成（タグが変更される場合のみ）
+    if 'tags' in parsed:
+        tags = parsed.get('tags', []) or []
+        if tags:
+            async def _send_ephemeral(content, **kwargs):
+                return await interaction.followup.send(content, ephemeral=True, **kwargs)
+            resolved_tags = await _resolve_missing_tags(
+                bot, guild_id, tags, interaction.user.id, _send_ephemeral
+            )
+            parsed['tags'] = resolved_tags
+
     events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
     if not events:
         return f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。"
@@ -1815,7 +2177,7 @@ def create_help_embed() -> discord.Embed:
     )
     embed.add_field(
         name="/カレンダー",
-        value="`/カレンダー 認証` `/カレンダー 認証解除` `/カレンダー 認証状態` `/カレンダー 設定`",
+        value="`/カレンダー 認証` `/カレンダー 認証解除` `/カレンダー 認証状態` `/カレンダー 設定` `/カレンダー 一覧`",
         inline=False
     )
     return embed
@@ -1839,7 +2201,7 @@ def create_tag_group_list_embed(groups: List[Dict[str, Any]], tags: List[Dict[st
     return embed
 
 async def _update_legend_event_by_guild(bot: CalendarBot, guild_id: str):
-    """guild_idベースで凡例イベントを更新（interactionなし版）"""
+    """guild_idベースで凡例イベントを全認証カレンダーに更新"""
     groups = bot.db_manager.list_tag_groups(guild_id)
     tags = bot.db_manager.list_tags(guild_id)
     presets = bot.db_manager.list_color_presets(guild_id)
@@ -1870,37 +2232,49 @@ async def _update_legend_event_by_guild(bot: CalendarBot, guild_id: str):
     description = "\n".join(lines)
     summary = "色/タグ 凡例"
 
-    legend_key = f"legend_event_id:{guild_id}"
-    legend_event_id = bot.db_manager.get_setting(legend_key, "")
-    cal_mgr = bot.get_calendar_manager_for_guild(int(guild_id))
-    if not cal_mgr:
-        return
+    # 全認証カレンダーに凡例を作成/更新
+    all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
+    for token_data in all_tokens:
+        user_id = token_data.get("_doc_id") or token_data.get("authenticated_by")
+        if user_id == "google":
+            user_id = token_data.get("authenticated_by", "")
+        if not user_id:
+            continue
+        cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
+        if not cal_mgr:
+            continue
 
-    if legend_event_id:
-        cal_mgr.update_event(legend_event_id, {
-            "summary": summary,
-            "description": description
-        })
-    else:
-        start_date = datetime(2000, 1, 1)
-        end_date = datetime(2100, 1, 1)
-        event_body = {
-            "summary": summary,
-            "description": description,
-            "start": {"date": start_date.strftime('%Y-%m-%d')},
-            "end": {"date": end_date.strftime('%Y-%m-%d')}
-        }
-        event = cal_mgr.service.events().insert(
-            calendarId=cal_mgr.calendar_id,
-            body=event_body
-        ).execute()
-        bot.db_manager.update_setting(legend_key, event['id'])
+        legend_key = f"legend_event_id:{guild_id}:{user_id}"
+        legend_event_id = bot.db_manager.get_setting(legend_key, "")
+
+        try:
+            if legend_event_id:
+                cal_mgr.update_event(legend_event_id, {
+                    "summary": summary,
+                    "description": description
+                })
+            else:
+                start_date = datetime(2000, 1, 1)
+                end_date = datetime(2100, 1, 1)
+                event_body = {
+                    "summary": summary,
+                    "description": description,
+                    "start": {"date": start_date.strftime('%Y-%m-%d')},
+                    "end": {"date": end_date.strftime('%Y-%m-%d')}
+                }
+                event = cal_mgr.service.events().insert(
+                    calendarId=cal_mgr.calendar_id,
+                    body=event_body
+                ).execute()
+                bot.db_manager.update_setting(legend_key, event['id'])
+        except Exception as e:
+            print(f"Legend event update failed for guild {guild_id}, user {user_id}: {e}")
 
 
 async def update_legend_event(bot: CalendarBot, interaction: discord.Interaction):
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-    cal_mgr = bot.get_calendar_manager_for_guild(interaction.guild_id)
-    if not cal_mgr:
+    all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
+    if not all_tokens:
         await interaction.followup.send("❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。", ephemeral=True)
         return
     await _update_legend_event_by_guild(bot, guild_id)
