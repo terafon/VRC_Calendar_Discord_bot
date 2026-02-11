@@ -168,6 +168,10 @@ class CalendarBot(commands.Bot):
             except Exception as e:
                 print(f"Migration error for guild {guild_id}: {e}")
 
+        # 定期通知タスクループ開始
+        if not self.check_scheduled_notifications.is_running():
+            self.check_scheduled_notifications.start()
+
     @tasks.loop(minutes=1)
     async def cleanup_sessions(self):
         """期限切れの会話セッションを定期的にクリーンアップ"""
@@ -2176,8 +2180,28 @@ def create_help_embed() -> discord.Embed:
     )
     embed.add_field(
         name="/カレンダー",
-        value="`/カレンダー 認証` `/カレンダー 認証解除` `/カレンダー 認証状態` `/カレンダー 設定` `/カレンダー 一覧`",
-        inline=False
+        value=(
+            "`認証` - Googleカレンダーと連携\n"
+            "`設定` - 表示名・説明・デフォルトを変更\n"
+            "`一覧` - 認証済みカレンダー一覧\n"
+            "`認証解除` `/認証状態`\n"
+            "※ サーバー管理権限が必要"
+        ), inline=False
+    )
+    embed.add_field(
+        name="🚀 初回セットアップ",
+        value=(
+            "1. `/カレンダー 認証` でGoogleカレンダーを連携\n"
+            "2. `/色 初期設定` でデフォルト色を設定\n"
+            "3. `/予定 毎週土曜21時にVRC集会` で登録！"
+        ), inline=False
+    )
+    embed.add_field(
+        name="📚 ドキュメント",
+        value=(
+            "[使い方ガイド](https://github.com/terafon/VRC_Calendar_Discord_bot/blob/main/docs/USAGE.md)\n"
+            "[仕様書](https://github.com/terafon/VRC_Calendar_Discord_bot/blob/main/docs/SPECIFICATION.md)"
+        ), inline=False
     )
     return embed
 
