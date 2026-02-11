@@ -66,6 +66,12 @@ def _create_color_palette_embeds() -> list:
     return embeds
 
 
+# ユーザーが選択可能な色（グラファイト=凡例専用を除外）
+USER_SELECTABLE_COLORS = {
+    cid: info for cid, info in GOOGLE_CALENDAR_COLORS.items() if cid != "8"
+}
+LEGEND_COLOR_ID = "8"  # グラファイト = 凡例イベント専用
+
 CANCEL_KEYWORDS = {"キャンセル", "やめる", "やめ", "中止", "取り消し", "cancel", "quit", "exit"}
 
 
@@ -579,6 +585,13 @@ def setup_commands(bot: CalendarBot):
             )
             return
 
+        if color_id == LEGEND_COLOR_ID:
+            await interaction.followup.send(
+                f"❌ colorId {LEGEND_COLOR_ID}（グラファイト）は凡例イベント専用のため選択できません。",
+                ephemeral=True,
+            )
+            return
+
         bot.db_manager.add_color_preset(guild_id, user_id, 名前, color_id, 説明)
         await _update_legend_event_for_user(bot, guild_id, user_id)
         await interaction.followup.send(f"✅ 色プリセット「{名前}」を設定しました。", ephemeral=True)
@@ -995,20 +1008,53 @@ def _auto_assign_color(db_manager: FirestoreManager, guild_id: str, user_id: str
     return db_manager.get_color_preset_by_recurrence(guild_id, user_id, category)
 
 
-def _build_url_description_section(
+def _build_event_description(
+    raw_description: str = "",
+    tags: Optional[List[str]] = None,
+    tag_groups: Optional[List[Dict[str, Any]]] = None,
     x_url: Optional[str] = None,
     vrc_group_url: Optional[str] = None,
     official_url: Optional[str] = None,
 ) -> str:
-    """Google Calendar description に追記するURL情報を構築"""
-    lines = []
+    """Google Calendar 予定の説明欄を統一フォーマットで構築"""
+    sections = []
+    if raw_description:
+        sections.append(raw_description)
+
+    # タグセクション
+    if tags:
+        tag_lines = ["─── タグ ───"]
+        if tag_groups:
+            tags_by_group: Dict[str, List[str]] = {}
+            for tg in tag_groups:
+                matched = [t for t in tags if t in [tag['name'] for tag in tg.get('tags', [])]]
+                if matched:
+                    tags_by_group[tg['name']] = matched
+            for group_name, group_tags in tags_by_group.items():
+                tag_lines.append(f"[{group_name}] {', '.join(group_tags)}")
+            # グループに属さないタグ
+            grouped: set = set()
+            for gt in tags_by_group.values():
+                grouped.update(gt)
+            ungrouped = [t for t in tags if t not in grouped]
+            if ungrouped:
+                tag_lines.append(f"{', '.join(ungrouped)}")
+        else:
+            tag_lines.append(", ".join(tags))
+        sections.append("\n".join(tag_lines))
+
+    # URLセクション
+    url_lines = []
     if x_url:
-        lines.append(f"X: {x_url}")
+        url_lines.append(f"X: {x_url}")
     if vrc_group_url:
-        lines.append(f"VRCグループ: {vrc_group_url}")
+        url_lines.append(f"VRCグループ: {vrc_group_url}")
     if official_url:
-        lines.append(f"公式サイト: {official_url}")
-    return "URLs:\n" + "\n".join(lines) if lines else ""
+        url_lines.append(f"公式サイト: {official_url}")
+    if url_lines:
+        sections.append("─── リンク ───\n" + "\n".join(url_lines))
+
+    return "\n\n".join(sections)
 
 
 def _event_data_to_parsed(event_data: Dict[str, Any], action: str) -> Dict[str, Any]:
@@ -1124,14 +1170,21 @@ async def _confirm_and_handle_in_thread(
             if token_info:
                 calendar_owner = token_info.get('_doc_id') or token_info.get('authenticated_by')
 
-    # 2. 色セットアップ完了チェック（addのみ）
+    # 2. 色セットアップ完了チェック（addのみ）— 未設定時はウィザードを表示
     if action == "add" and calendar_owner:
         if not bot.db_manager.is_color_setup_done(guild_id, calendar_owner):
             await thread.send(
-                "⚠️ このカレンダーの色初期設定がまだ完了していません。\n"
-                "`/色 初期設定` コマンドを実行して、繰り返しタイプごとのデフォルト色を設定することをお勧めします。\n"
-                "色なしでも予定登録は可能です。"
+                "🎨 このカレンダーの色初期設定がまだ完了していません。\n"
+                "各予定種類に対するデフォルト色を設定しましょう！"
             )
+            setup_view = ColorSetupView(author.id, guild_id, bot, target_user_id=calendar_owner)
+            msg = await thread.send(
+                f"**{COLOR_CATEGORIES[0]['label']}**（{COLOR_CATEGORIES[0]['description']}）の色を選択してください。",
+                view=setup_view,
+            )
+            await setup_view.wait()
+            # セットアップ完了後、色凡例を更新
+            await _update_color_legend_for_user(bot, guild_id, calendar_owner)
 
     # 3. 色チェック（色自動割当）— calendar_owner を使用
     if action == "add" and not parsed.get("color_name") and calendar_owner:
@@ -1175,6 +1228,8 @@ async def _confirm_and_handle_in_thread(
                         await thread.send(
                             f"✅ 色プリセット「{category_label}」（{color_info.get('name', '?')} / colorId {color_select_view.selected_color_id}）を登録しました。"
                         )
+                        # 色凡例を更新
+                        await _update_color_legend_for_user(bot, guild_id, calendar_owner)
 
     # 4. 未登録タグの確認・自動作成（add/edit でタグがある場合）
     if action in ("add", "edit"):
@@ -1184,6 +1239,9 @@ async def _confirm_and_handle_in_thread(
                 bot, guild_id, tags, author.id, thread.send
             )
             parsed['tags'] = resolved_tags
+            # タグが変更された場合、タグ凡例を更新
+            if calendar_owner:
+                await _update_tag_legend_for_user(bot, guild_id, calendar_owner)
 
     if action == "add":
         summary = build_event_summary(parsed)
@@ -1333,7 +1391,7 @@ class ColorSetupView(discord.ui.View):
                 description=info['hex'],
                 emoji=COLOR_EMOJI.get(cid),
             )
-            for cid, info in GOOGLE_CALENDAR_COLORS.items()
+            for cid, info in USER_SELECTABLE_COLORS.items()
         ]
 
         select = discord.ui.Select(
@@ -1460,7 +1518,7 @@ class ColorSelectForEventView(discord.ui.View):
                 description=info['hex'],
                 emoji=COLOR_EMOJI.get(cid),
             )
-            for cid, info in GOOGLE_CALENDAR_COLORS.items()
+            for cid, info in USER_SELECTABLE_COLORS.items()
         ]
         select = discord.ui.Select(
             placeholder="色を選択してください",
@@ -1775,11 +1833,11 @@ async def _handle_add_event_direct(
     official_url = parsed.get('official_url') or None
 
     raw_description = parsed.get('description', '')
-    # Google Calendar用にURL情報を追記した説明文を構築
-    cal_description = raw_description
-    url_section = _build_url_description_section(x_url, vrc_group_url, official_url)
-    if url_section:
-        cal_description = f"{raw_description}\n\n{url_section}".strip()
+    cal_description = _build_event_description(
+        raw_description=raw_description,
+        tags=tags,
+        x_url=x_url, vrc_group_url=vrc_group_url, official_url=official_url,
+    )
 
     event_id = bot.db_manager.add_event(
         guild_id=guild_id,
@@ -1909,18 +1967,18 @@ async def _handle_edit_event_direct(
 
         google_updates = {}
         if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
-        if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url')):
-            # Firestoreのdescriptionは生テキスト（URL情報を含まない）
+        if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url', 'tags')):
             raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
-            url_section = _build_url_description_section(
-                updates.get('x_url', event.get('x_url')),
-                updates.get('vrc_group_url', event.get('vrc_group_url')),
-                updates.get('official_url', event.get('official_url')),
+            edit_tags = updates.get('tags') if 'tags' in updates else (
+                json.loads(event['tags']) if event.get('tags') else []
             )
-            cal_description = raw_desc
-            if url_section:
-                cal_description = f"{raw_desc}\n\n{url_section}".strip()
-            google_updates['description'] = cal_description
+            google_updates['description'] = _build_event_description(
+                raw_description=raw_desc,
+                tags=edit_tags if edit_tags else None,
+                x_url=updates.get('x_url', event.get('x_url')),
+                vrc_group_url=updates.get('vrc_group_url', event.get('vrc_group_url')),
+                official_url=updates.get('official_url', event.get('official_url')),
+            )
         if 'color_name' in updates:
             color_name = updates.get('color_name')
             color_id = None
@@ -2007,12 +2065,13 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
     vrc_group_url = parsed.get('vrc_group_url') or None
     official_url = parsed.get('official_url') or None
 
-    # Firestoreには生のdescription、Google CalendarにはURL付きを使用
+    # Firestoreには生のdescription、Google CalendarにはURL・タグ付きを使用
     raw_description = parsed.get('description', '')
-    cal_description = raw_description
-    url_section = _build_url_description_section(x_url, vrc_group_url, official_url)
-    if url_section:
-        cal_description = f"{raw_description}\n\n{url_section}".strip()
+    cal_description = _build_event_description(
+        raw_description=raw_description,
+        tags=tags,
+        x_url=x_url, vrc_group_url=vrc_group_url, official_url=official_url,
+    )
 
     # データベースに保存
     event_id = bot.db_manager.add_event(
@@ -2149,18 +2208,18 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
 
         google_updates = {}
         if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
-        if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url')):
-            # Firestoreのdescriptionは生テキスト（URL情報を含まない）
+        if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url', 'tags')):
             raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
-            url_section = _build_url_description_section(
-                updates.get('x_url', event.get('x_url')),
-                updates.get('vrc_group_url', event.get('vrc_group_url')),
-                updates.get('official_url', event.get('official_url')),
+            edit_tags = updates.get('tags') if 'tags' in updates else (
+                json.loads(event['tags']) if event.get('tags') else []
             )
-            cal_description = raw_desc
-            if url_section:
-                cal_description = f"{raw_desc}\n\n{url_section}".strip()
-            google_updates['description'] = cal_description
+            google_updates['description'] = _build_event_description(
+                raw_description=raw_desc,
+                tags=edit_tags if edit_tags else None,
+                x_url=updates.get('x_url', event.get('x_url')),
+                vrc_group_url=updates.get('vrc_group_url', event.get('vrc_group_url')),
+                official_url=updates.get('official_url', event.get('official_url')),
+            )
         if 'color_name' in updates:
             color_name = updates.get('color_name')
             color_id = None
@@ -2581,26 +2640,97 @@ def create_tag_group_list_embed(groups: List[Dict[str, Any]], tags: List[Dict[st
         )
     return embed
 
-async def _update_legend_event_by_guild(bot: CalendarBot, guild_id: str):
-    """guild_idベースで凡例イベントを全認証カレンダーに更新（各カレンダー固有の色プリセットを反映）"""
+def _upsert_legend_event(cal_mgr, db_manager, legend_key: str, legend_event_id: str, summary: str, description: str):
+    """凡例イベントの作成/更新共通処理"""
+    try:
+        event_body = {
+            "summary": summary,
+            "description": description,
+            "colorId": LEGEND_COLOR_ID,
+        }
+        if legend_event_id:
+            cal_mgr.update_event(legend_event_id, event_body)
+        else:
+            event_body.update({
+                "start": {"date": "2000-01-01"},
+                "end": {"date": "2100-01-01"},
+            })
+            event = cal_mgr.service.events().insert(
+                calendarId=cal_mgr.calendar_id, body=event_body
+            ).execute()
+            db_manager.update_setting(legend_key, event['id'])
+    except Exception as e:
+        print(f"Legend event upsert failed ({legend_key}): {e}")
+
+
+async def _update_color_legend_for_user(bot: CalendarBot, guild_id: str, user_id: str):
+    """色凡例イベントを更新（カレンダー単位）"""
+    presets = bot.db_manager.list_color_presets(guild_id, user_id)
+
+    cat_labels = {c["key"]: c["label"] for c in COLOR_CATEGORIES}
+    lines = ["═══ 色プリセット一覧 ═══", ""]
+    if presets:
+        for p in presets:
+            cid = p['color_id']
+            emoji = COLOR_EMOJI.get(cid, "")
+            color_name = GOOGLE_CALENDAR_COLORS.get(cid, {}).get('name', '?')
+            rt = p.get('recurrence_type')
+            rt_label = f" → {cat_labels.get(rt, rt)}" if rt else ""
+            desc = f"({p['description']})" if p.get('description') else ""
+            lines.append(f"{emoji} {color_name} (colorId {cid}){rt_label} {desc}")
+    else:
+        lines.append("登録なし")
+
+    description = "\n".join(lines)
+    summary = "🎨 色プリセット凡例"
+
+    cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
+    if not cal_mgr:
+        return
+
+    legend_key = f"legend_color_event_id:{guild_id}:{user_id}"
+    legend_event_id = bot.db_manager.get_setting(legend_key, "")
+
+    _upsert_legend_event(cal_mgr, bot.db_manager, legend_key, legend_event_id, summary, description)
+
+
+async def _update_tag_legend_for_user(bot: CalendarBot, guild_id: str, user_id: str):
+    """タグ凡例イベントを更新（カレンダー単位）"""
     groups = bot.db_manager.list_tag_groups(guild_id)
     tags = bot.db_manager.list_tags(guild_id)
 
-    # タグ部分は全カレンダー共通
-    tag_lines = ["\n【タググループ】"]
+    lines = ["═══ タググループ一覧 ═══", ""]
     tags_by_group: Dict[int, List[Dict[str, Any]]] = {}
     for tag in tags:
         tags_by_group.setdefault(tag['group_id'], []).append(tag)
     for group in groups:
-        tag_lines.append(f"- {group['name']}: {group.get('description','')}")
-        for tag in tags_by_group.get(group['id'], []):
-            tag_lines.append(f"  - {tag['name']}: {tag.get('description','')}")
+        lines.append(f"【{group['name']}】{group.get('description','')}")
+        for t in tags_by_group.get(group['id'], []):
+            lines.append(f"  ・{t['name']}: {t.get('description','')}")
     if not groups:
-        tag_lines.append("- 登録なし")
+        lines.append("登録なし")
 
-    summary = "色/タグ 凡例"
+    description = "\n".join(lines)
+    summary = "🏷️ タグ凡例"
 
-    # 全認証カレンダーに凡例を作成/更新（各カレンダー固有の色プリセットを使用）
+    cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
+    if not cal_mgr:
+        return
+
+    legend_key = f"legend_tag_event_id:{guild_id}:{user_id}"
+    legend_event_id = bot.db_manager.get_setting(legend_key, "")
+
+    _upsert_legend_event(cal_mgr, bot.db_manager, legend_key, legend_event_id, summary, description)
+
+
+async def _update_legend_event_for_user(bot: CalendarBot, guild_id: str, user_id: str):
+    """後方互換: 色・タグ両方の凡例を更新"""
+    await _update_color_legend_for_user(bot, guild_id, user_id)
+    await _update_tag_legend_for_user(bot, guild_id, user_id)
+
+
+async def _update_legend_event_by_guild(bot: CalendarBot, guild_id: str):
+    """guild_idベースで凡例イベントを全認証カレンダーに更新"""
     all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
     for token_data in all_tokens:
         user_id = token_data.get("_doc_id") or token_data.get("authenticated_by")
@@ -2608,114 +2738,28 @@ async def _update_legend_event_by_guild(bot: CalendarBot, guild_id: str):
             user_id = token_data.get("authenticated_by", "")
         if not user_id:
             continue
-        cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
-        if not cal_mgr:
+        await _update_color_legend_for_user(bot, guild_id, user_id)
+        await _update_tag_legend_for_user(bot, guild_id, user_id)
+
+    # 旧凡例イベントのマイグレーション（旧キーが存在する場合は削除して新キーに移行）
+    for token_data in all_tokens:
+        user_id = token_data.get("_doc_id") or token_data.get("authenticated_by")
+        if user_id == "google":
+            user_id = token_data.get("authenticated_by", "")
+        if not user_id:
             continue
-
-        # このカレンダー固有の色プリセットを取得
-        presets = bot.db_manager.list_color_presets(guild_id, user_id)
-        lines = ["【色プリセット】"]
-        if presets:
-            for p in presets:
-                rt = p.get('recurrence_type')
-                rt_label = ""
-                if rt:
-                    cat_labels = {c["key"]: c["label"] for c in COLOR_CATEGORIES}
-                    rt_label = f" → {cat_labels.get(rt, rt)}"
-                lines.append(f"- {p['name']} (colorId {p['color_id']}){rt_label}: {p.get('description','')}")
-        else:
-            lines.append("- 登録なし")
-        lines.extend(tag_lines)
-        description = "\n".join(lines)
-
-        legend_key = f"legend_event_id:{guild_id}:{user_id}"
-        legend_event_id = bot.db_manager.get_setting(legend_key, "")
-
-        try:
-            if legend_event_id:
-                cal_mgr.update_event(legend_event_id, {
-                    "summary": summary,
-                    "description": description
-                })
-            else:
-                start_date = datetime(2000, 1, 1)
-                end_date = datetime(2100, 1, 1)
-                event_body = {
-                    "summary": summary,
-                    "description": description,
-                    "start": {"date": start_date.strftime('%Y-%m-%d')},
-                    "end": {"date": end_date.strftime('%Y-%m-%d')}
-                }
-                event = cal_mgr.service.events().insert(
-                    calendarId=cal_mgr.calendar_id,
-                    body=event_body
-                ).execute()
-                bot.db_manager.update_setting(legend_key, event['id'])
-        except Exception as e:
-            print(f"Legend event update failed for guild {guild_id}, user {user_id}: {e}")
-
-
-async def _update_legend_event_for_user(bot: CalendarBot, guild_id: str, user_id: str):
-    """特定カレンダーの凡例イベントのみ更新"""
-    groups = bot.db_manager.list_tag_groups(guild_id)
-    tags = bot.db_manager.list_tags(guild_id)
-    presets = bot.db_manager.list_color_presets(guild_id, user_id)
-
-    lines = ["【色プリセット】"]
-    if presets:
-        for p in presets:
-            rt = p.get('recurrence_type')
-            rt_label = ""
-            if rt:
-                cat_labels = {c["key"]: c["label"] for c in COLOR_CATEGORIES}
-                rt_label = f" → {cat_labels.get(rt, rt)}"
-            lines.append(f"- {p['name']} (colorId {p['color_id']}){rt_label}: {p.get('description','')}")
-    else:
-        lines.append("- 登録なし")
-
-    lines.append("\n【タググループ】")
-    tags_by_group: Dict[int, List[Dict[str, Any]]] = {}
-    for tag in tags:
-        tags_by_group.setdefault(tag['group_id'], []).append(tag)
-    for group in groups:
-        lines.append(f"- {group['name']}: {group.get('description','')}")
-        for tag in tags_by_group.get(group['id'], []):
-            lines.append(f"  - {tag['name']}: {tag.get('description','')}")
-    if not groups:
-        lines.append("- 登録なし")
-
-    description = "\n".join(lines)
-    summary = "色/タグ 凡例"
-
-    cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
-    if not cal_mgr:
-        return
-
-    legend_key = f"legend_event_id:{guild_id}:{user_id}"
-    legend_event_id = bot.db_manager.get_setting(legend_key, "")
-
-    try:
-        if legend_event_id:
-            cal_mgr.update_event(legend_event_id, {
-                "summary": summary,
-                "description": description
-            })
-        else:
-            start_date = datetime(2000, 1, 1)
-            end_date = datetime(2100, 1, 1)
-            event_body = {
-                "summary": summary,
-                "description": description,
-                "start": {"date": start_date.strftime('%Y-%m-%d')},
-                "end": {"date": end_date.strftime('%Y-%m-%d')}
-            }
-            event = cal_mgr.service.events().insert(
-                calendarId=cal_mgr.calendar_id,
-                body=event_body
-            ).execute()
-            bot.db_manager.update_setting(legend_key, event['id'])
-    except Exception as e:
-        print(f"Legend event update failed for guild {guild_id}, user {user_id}: {e}")
+        old_key = f"legend_event_id:{guild_id}:{user_id}"
+        old_event_id = bot.db_manager.get_setting(old_key, "")
+        if old_event_id:
+            cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
+            if cal_mgr:
+                try:
+                    cal_mgr.service.events().delete(
+                        calendarId=cal_mgr.calendar_id, eventId=old_event_id
+                    ).execute()
+                except Exception:
+                    pass
+            bot.db_manager.update_setting(old_key, "")
 
 
 async def update_legend_event(bot: CalendarBot, interaction: discord.Interaction):
