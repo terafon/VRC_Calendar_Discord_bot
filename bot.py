@@ -420,14 +420,23 @@ def setup_commands(bot: CalendarBot):
                     return
 
                 # スレッド内で確認フロー
-                response, should_end_session = await _dispatch_action_in_thread(bot, thread, message.author, parsed, session.guild_id)
+                try:
+                    response, should_end_session = await _dispatch_action_in_thread(bot, thread, message.author, parsed, session.guild_id)
+                except Exception as e:
+                    await thread.send(f"❌ エラーが発生しました: {e}")
+                    response = None
+                    should_end_session = True
+
                 if response:
                     await thread.send(response)
 
                 if should_end_session:
                     # セッション終了 → アーカイブ
                     bot.conversation_manager.remove_session(thread.id)
-                    await thread.edit(archived=True)
+                    try:
+                        await thread.edit(archived=True)
+                    except Exception:
+                        pass
                 # else: 修正モード → セッション継続（何もしない、次のメッセージを待つ）
 
             elif status == "needs_info":
