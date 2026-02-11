@@ -120,7 +120,7 @@ class CalendarBot(commands.Bot):
         """サーバーのタグ・色・既存予定名・カレンダーの情報を取得する"""
         tag_groups = self.db_manager.list_tag_groups(guild_id)
         tags = self.db_manager.list_tags(guild_id)
-        color_presets = self.db_manager.list_color_presets(guild_id)
+        color_presets_by_calendar = self.db_manager.list_all_color_presets_by_calendar(guild_id)
         active_events = self.db_manager.get_all_active_events(guild_id)
         event_names = [e['event_name'] for e in active_events]
 
@@ -134,7 +134,7 @@ class CalendarBot(commands.Bot):
         return {
             "tag_groups": tag_groups,
             "tags": tags,
-            "color_presets": color_presets,
+            "color_presets_by_calendar": color_presets_by_calendar,
             "event_names": event_names,
             "calendars": calendars,
         }
@@ -150,21 +150,11 @@ class CalendarBot(commands.Bot):
         if not self.cleanup_sessions.is_running():
             self.cleanup_sessions.start()
 
-        # 既存サーバーの色セットアップマイグレーション
+        # 既存サーバーの色プリセットマイグレーション（guild単位→カレンダー単位）
         for guild in self.guilds:
             guild_id = str(guild.id)
             try:
-                all_tokens = self.db_manager.get_all_oauth_tokens(guild_id)
-                if all_tokens:
-                    guild_doc = self.db_manager._guild_ref(guild_id).get()
-                    if guild_doc.exists:
-                        data = guild_doc.to_dict()
-                        if not data.get("default_colors_initialized", False):
-                            self.db_manager.mark_color_setup_pending(guild_id)
-                            print(f"Guild {guild_id}: color setup pending flag set")
-                    else:
-                        self.db_manager.mark_color_setup_pending(guild_id)
-                        print(f"Guild {guild_id}: color setup pending flag set (new doc)")
+                self.db_manager.migrate_guild_color_presets_to_calendars(guild_id)
             except Exception as e:
                 print(f"Migration error for guild {guild_id}: {e}")
 
@@ -277,16 +267,6 @@ def setup_commands(bot: CalendarBot):
         try:
             guild_id = str(interaction.guild_id) if interaction.guild_id else ""
 
-            # 色セットアップ未完了チェック
-            if bot.db_manager.is_color_setup_pending(guild_id):
-                await interaction.followup.send(
-                    "⚠️ 色の初期設定がまだ完了していません。\n"
-                    "先に `/色 初期設定` コマンドを実行して、繰り返しタイプごとのデフォルト色を設定してください。\n"
-                    "スキップする場合は、管理者が `/色 初期設定` を実行してください。",
-                    ephemeral=True
-                )
-                return
-
             server_context = bot._get_server_context(guild_id)
 
             # マルチターン会話セッションでメッセージを送信
@@ -332,13 +312,17 @@ def setup_commands(bot: CalendarBot):
                     parsed = _event_data_to_parsed(event_data, action)
                     # 色自動割当（addまたはeditでcolor_name未指定の場合）
                     if action in ("add", "edit") and not parsed.get("color_name"):
-                        auto_color = _auto_assign_color(
-                            bot.db_manager, guild_id,
-                            parsed.get("recurrence"), parsed.get("nth_weeks"),
-                        )
-                        if auto_color:
-                            parsed["color_name"] = auto_color["name"]
-                            parsed["_auto_color"] = True
+                        # デフォルトカレンダーのオーナーを使用
+                        token_info = _resolve_calendar_owner(bot, guild_id, parsed.get('calendar_name'))
+                        default_owner = (token_info.get('_doc_id') or token_info.get('authenticated_by')) if token_info else None
+                        if default_owner:
+                            auto_color = _auto_assign_color(
+                                bot.db_manager, guild_id, default_owner,
+                                parsed.get("recurrence"), parsed.get("nth_weeks"),
+                            )
+                            if auto_color:
+                                parsed["color_name"] = auto_color["name"]
+                                parsed["_auto_color"] = True
                 elif action == "search":
                     parsed = {
                         "action": "search",
@@ -419,15 +403,7 @@ def setup_commands(bot: CalendarBot):
                 # 情報収集完了 → 確認フロー
                 if action in ("add", "edit", "delete"):
                     parsed = _event_data_to_parsed(session.partial_data, action)
-                    # 色自動割当（addまたはeditでcolor_name未指定の場合）
-                    if action in ("add", "edit") and not parsed.get("color_name"):
-                        auto_color = _auto_assign_color(
-                            bot.db_manager, session.guild_id,
-                            parsed.get("recurrence"), parsed.get("nth_weeks"),
-                        )
-                        if auto_color:
-                            parsed["color_name"] = auto_color["name"]
-                            parsed["_auto_color"] = True
+                    # 色自動割当はカレンダー選択後に行うため、ここでは行わない
                 elif action == "search":
                     parsed = {
                         "action": "search",
@@ -497,6 +473,16 @@ def setup_commands(bot: CalendarBot):
         """色セットアップウィザード"""
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        user_id = str(interaction.user.id)
+
+        # 実行ユーザーのoauth_tokenが存在するか確認
+        oauth_tokens = bot.db_manager.get_oauth_tokens(guild_id, user_id)
+        if not oauth_tokens:
+            await interaction.followup.send(
+                "❌ あなたのカレンダーが認証されていません。先に `/カレンダー 認証` を実行してください。",
+                ephemeral=True,
+            )
+            return
 
         # Google Calendar色パレットをEmbed一覧で表示（カラーバーで実際の色が見える）
         palette_embeds = _create_color_palette_embeds()
@@ -517,7 +503,7 @@ def setup_commands(bot: CalendarBot):
             ),
             color=discord.Color.blue(),
         )
-        view = ColorSetupView(interaction.user.id, guild_id, bot)
+        view = ColorSetupView(interaction.user.id, guild_id, bot, target_user_id=user_id)
         await interaction.followup.send(
             embeds=[palette_embeds[10], wizard_embed],
             view=view,
@@ -528,7 +514,18 @@ def setup_commands(bot: CalendarBot):
     async def color_list_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-        presets = bot.db_manager.list_color_presets(guild_id)
+        user_id = str(interaction.user.id)
+
+        # 実行ユーザーのoauth_token確認
+        oauth_tokens = bot.db_manager.get_oauth_tokens(guild_id, user_id)
+        if not oauth_tokens:
+            await interaction.followup.send(
+                "❌ あなたのカレンダーが認証されていません。先に `/カレンダー 認証` を実行してください。",
+                ephemeral=True,
+            )
+            return
+
+        presets = bot.db_manager.list_color_presets(guild_id, user_id)
 
         if not presets:
             embed = discord.Embed(
@@ -571,8 +568,19 @@ def setup_commands(bot: CalendarBot):
     async def color_add_command(interaction: discord.Interaction, 名前: str, color_id: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-        bot.db_manager.add_color_preset(guild_id, 名前, color_id, 説明)
-        await update_legend_event(bot, interaction)
+        user_id = str(interaction.user.id)
+
+        # 実行ユーザーのoauth_token確認
+        oauth_tokens = bot.db_manager.get_oauth_tokens(guild_id, user_id)
+        if not oauth_tokens:
+            await interaction.followup.send(
+                "❌ あなたのカレンダーが認証されていません。先に `/カレンダー 認証` を実行してください。",
+                ephemeral=True,
+            )
+            return
+
+        bot.db_manager.add_color_preset(guild_id, user_id, 名前, color_id, 説明)
+        await _update_legend_event_for_user(bot, guild_id, user_id)
         await interaction.followup.send(f"✅ 色プリセット「{名前}」を設定しました。", ephemeral=True)
 
     @color_group.command(name="削除", description="色プリセットを削除します")
@@ -580,8 +588,19 @@ def setup_commands(bot: CalendarBot):
     async def color_delete_command(interaction: discord.Interaction, 名前: str):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-        bot.db_manager.delete_color_preset(guild_id, 名前)
-        await update_legend_event(bot, interaction)
+        user_id = str(interaction.user.id)
+
+        # 実行ユーザーのoauth_token確認
+        oauth_tokens = bot.db_manager.get_oauth_tokens(guild_id, user_id)
+        if not oauth_tokens:
+            await interaction.followup.send(
+                "❌ あなたのカレンダーが認証されていません。先に `/カレンダー 認証` を実行してください。",
+                ephemeral=True,
+            )
+            return
+
+        bot.db_manager.delete_color_preset(guild_id, user_id, 名前)
+        await _update_legend_event_for_user(bot, guild_id, user_id)
         await interaction.followup.send(f"✅ 色プリセット「{名前}」を削除しました。", ephemeral=True)
 
     bot.tree.add_command(color_group)
@@ -967,13 +986,13 @@ def _resolve_color_category(recurrence: Optional[str], nth_weeks: Optional[List[
     return None
 
 
-def _auto_assign_color(db_manager: FirestoreManager, guild_id: str, recurrence: Optional[str], nth_weeks: Optional[List[int]]) -> Optional[Dict[str, str]]:
-    """色カテゴリに基づいて色プリセットを自動割当。
+def _auto_assign_color(db_manager: FirestoreManager, guild_id: str, user_id: str, recurrence: Optional[str], nth_weeks: Optional[List[int]]) -> Optional[Dict[str, str]]:
+    """色カテゴリに基づいて色プリセットを自動割当（カレンダー単位）。
     Returns: {"name": "色名", "color_id": "9"} or None"""
     category = _resolve_color_category(recurrence, nth_weeks)
     if not category:
         return None
-    return db_manager.get_color_preset_by_recurrence(guild_id, category)
+    return db_manager.get_color_preset_by_recurrence(guild_id, user_id, category)
 
 
 def _build_url_description_section(
@@ -1082,50 +1101,8 @@ async def _confirm_and_handle_in_thread(
     Returns:
         Tuple[Optional[str], bool]: (メッセージ, セッション終了フラグ)
     """
-    # 色が未設定の場合、新色追加ダイアログ（addのみ）
-    if action == "add" and not parsed.get("color_name"):
-        recurrence = parsed.get("recurrence")
-        nth_weeks = parsed.get("nth_weeks")
-        category = _resolve_color_category(recurrence, nth_weeks)
-        if category:
-            cat_labels = {c["key"]: c["label"] for c in COLOR_CATEGORIES}
-            category_label = cat_labels.get(category, category)
-            new_color_view = NewColorLegendView(author.id, category_label)
-            await thread.send(
-                f"🎨 「{category_label}」に対応する色プリセットがありません。\n新しく色を追加しますか？",
-                view=new_color_view,
-            )
-            await new_color_view.wait()
-
-            if new_color_view.value == "add":
-                color_select_view = ColorSelectForEventView(author.id)
-                await thread.send("📎 色を選択してください:", view=color_select_view)
-                await color_select_view.wait()
-
-                if color_select_view.selected_color_id:
-                    # プリセットを登録して色を自動割当
-                    bot.db_manager.add_color_preset(
-                        guild_id, category_label, color_select_view.selected_color_id,
-                        description=f"{category_label}のイベント",
-                        recurrence_type=category, is_auto_generated=True,
-                    )
-                    parsed["color_name"] = category_label
-                    parsed["_auto_color"] = True
-                    color_info = GOOGLE_CALENDAR_COLORS.get(color_select_view.selected_color_id, {})
-                    await thread.send(
-                        f"✅ 色プリセット「{category_label}」（{color_info.get('name', '?')} / colorId {color_select_view.selected_color_id}）を登録しました。"
-                    )
-
-    # 未登録タグの確認・自動作成（add/edit でタグがある場合）
-    if action in ("add", "edit"):
-        tags = parsed.get('tags', []) or []
-        if tags:
-            resolved_tags = await _resolve_missing_tags(
-                bot, guild_id, tags, author.id, thread.send
-            )
-            parsed['tags'] = resolved_tags
-
-    # カレンダー選択（複数ある場合のみUI表示、addのみ）
+    # 1. カレンダー選択（複数ある場合のみUI表示、addのみ）
+    calendar_owner = None
     if action == "add":
         all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
         if len(all_tokens) > 1 and not parsed.get('calendar_name'):
@@ -1135,8 +1112,78 @@ async def _confirm_and_handle_in_thread(
             if cal_view.selected_calendar_owner:
                 parsed['calendar_name'] = cal_view.selected_display_name
                 parsed['_calendar_owner'] = cal_view.selected_calendar_owner
+                calendar_owner = cal_view.selected_calendar_owner
         elif len(all_tokens) == 1:
-            parsed['_calendar_owner'] = all_tokens[0].get('_doc_id') or all_tokens[0].get('authenticated_by')
+            calendar_owner = all_tokens[0].get('_doc_id') or all_tokens[0].get('authenticated_by')
+            parsed['_calendar_owner'] = calendar_owner
+        elif not all_tokens:
+            # カレンダー未認証
+            pass
+        if not calendar_owner:
+            token_info = _resolve_calendar_owner(bot, guild_id, parsed.get('calendar_name'))
+            if token_info:
+                calendar_owner = token_info.get('_doc_id') or token_info.get('authenticated_by')
+
+    # 2. 色セットアップ完了チェック（addのみ）
+    if action == "add" and calendar_owner:
+        if not bot.db_manager.is_color_setup_done(guild_id, calendar_owner):
+            await thread.send(
+                "⚠️ このカレンダーの色初期設定がまだ完了していません。\n"
+                "`/色 初期設定` コマンドを実行して、繰り返しタイプごとのデフォルト色を設定することをお勧めします。\n"
+                "色なしでも予定登録は可能です。"
+            )
+
+    # 3. 色チェック（色自動割当）— calendar_owner を使用
+    if action == "add" and not parsed.get("color_name") and calendar_owner:
+        auto_color = _auto_assign_color(
+            bot.db_manager, guild_id, calendar_owner,
+            parsed.get("recurrence"), parsed.get("nth_weeks"),
+        )
+        if auto_color:
+            parsed["color_name"] = auto_color["name"]
+            parsed["_auto_color"] = True
+        else:
+            # 色プリセットがない場合、新色追加ダイアログ
+            recurrence = parsed.get("recurrence")
+            nth_weeks = parsed.get("nth_weeks")
+            category = _resolve_color_category(recurrence, nth_weeks)
+            if category:
+                cat_labels = {c["key"]: c["label"] for c in COLOR_CATEGORIES}
+                category_label = cat_labels.get(category, category)
+                new_color_view = NewColorLegendView(author.id, category_label)
+                await thread.send(
+                    f"🎨 「{category_label}」に対応する色プリセットがありません。\n新しく色を追加しますか？",
+                    view=new_color_view,
+                )
+                await new_color_view.wait()
+
+                if new_color_view.value == "add":
+                    color_select_view = ColorSelectForEventView(author.id)
+                    await thread.send("📎 色を選択してください:", view=color_select_view)
+                    await color_select_view.wait()
+
+                    if color_select_view.selected_color_id:
+                        # プリセットを登録して色を自動割当
+                        bot.db_manager.add_color_preset(
+                            guild_id, calendar_owner, category_label, color_select_view.selected_color_id,
+                            description=f"{category_label}のイベント",
+                            recurrence_type=category, is_auto_generated=True,
+                        )
+                        parsed["color_name"] = category_label
+                        parsed["_auto_color"] = True
+                        color_info = GOOGLE_CALENDAR_COLORS.get(color_select_view.selected_color_id, {})
+                        await thread.send(
+                            f"✅ 色プリセット「{category_label}」（{color_info.get('name', '?')} / colorId {color_select_view.selected_color_id}）を登録しました。"
+                        )
+
+    # 4. 未登録タグの確認・自動作成（add/edit でタグがある場合）
+    if action in ("add", "edit"):
+        tags = parsed.get('tags', []) or []
+        if tags:
+            resolved_tags = await _resolve_missing_tags(
+                bot, guild_id, tags, author.id, thread.send
+            )
+            parsed['tags'] = resolved_tags
 
     if action == "add":
         summary = build_event_summary(parsed)
@@ -1262,11 +1309,12 @@ class ThreadConfirmView(discord.ui.View):
 class ColorSetupView(discord.ui.View):
     """カテゴリごとにcolorIdを選択するウィザード"""
 
-    def __init__(self, author_id: int, guild_id: str, bot: CalendarBot):
+    def __init__(self, author_id: int, guild_id: str, bot: CalendarBot, target_user_id: str = ""):
         super().__init__(timeout=300)
         self.author_id = author_id
         self.guild_id = guild_id
         self.bot = bot
+        self.target_user_id = target_user_id or str(author_id)
         self.selections: Dict[str, Dict[str, str]] = {}  # key -> {"color_id": "9", "name": "色名"}
         self.current_index = 0
         self._add_select_for_current()
@@ -1333,8 +1381,8 @@ class ColorSetupView(discord.ui.View):
     async def _on_skip_all(self, interaction: discord.Interaction):
         if interaction.user.id != self.author_id:
             return
-        # セットアップ完了フラグだけ設定
-        self.bot.db_manager.mark_color_setup_done(self.guild_id)
+        # セットアップ完了フラグだけ設定（カレンダー単位）
+        self.bot.db_manager.mark_color_setup_done(self.guild_id, self.target_user_id)
         await interaction.response.edit_message(
             content="⏭️ 色初期設定をスキップしました。後から `/色 初期設定` で設定できます。",
             view=None,
@@ -1342,7 +1390,7 @@ class ColorSetupView(discord.ui.View):
         self.stop()
 
     async def _finalize(self, interaction: discord.Interaction):
-        """選択完了後、色プリセットを一括登録"""
+        """選択完了後、色プリセットを一括登録（カレンダー単位）"""
         presets_data = []
         for key, data in self.selections.items():
             presets_data.append({
@@ -1352,12 +1400,10 @@ class ColorSetupView(discord.ui.View):
                 "description": data["description"],
             })
 
-        self.bot.db_manager.initialize_default_color_presets(self.guild_id, presets_data)
+        self.bot.db_manager.initialize_default_color_presets(self.guild_id, self.target_user_id, presets_data)
 
-        # 凡例イベント更新
-        all_tokens = self.bot.db_manager.get_all_oauth_tokens(self.guild_id)
-        if all_tokens:
-            await _update_legend_event_by_guild(self.bot, self.guild_id)
+        # 対象カレンダーの凡例イベントのみ更新
+        await _update_legend_event_for_user(self.bot, self.guild_id, self.target_user_id)
 
         summary_lines = []
         for key, data in self.selections.items():
@@ -1710,10 +1756,16 @@ async def _handle_add_event_direct(
     if missing_tags:
         return f"❌ 未登録のタグがあります: {', '.join(missing_tags)}"
 
+    # カレンダーオーナー解決
+    calendar_owner = parsed.get('_calendar_owner')
+    if not calendar_owner:
+        token_info = _resolve_calendar_owner(bot, guild_id, parsed.get('calendar_name'))
+        calendar_owner = token_info.get('_doc_id') or token_info.get('authenticated_by') if token_info else None
+
     color_name = parsed.get('color_name')
     color_id = None
-    if color_name:
-        preset = bot.db_manager.get_color_preset(guild_id, color_name)
+    if color_name and calendar_owner:
+        preset = bot.db_manager.get_color_preset(guild_id, calendar_owner, color_name)
         if not preset:
             return f"❌ 色名「{color_name}」が登録されていません。"
         color_id = preset['color_id']
@@ -1728,12 +1780,6 @@ async def _handle_add_event_direct(
     url_section = _build_url_description_section(x_url, vrc_group_url, official_url)
     if url_section:
         cal_description = f"{raw_description}\n\n{url_section}".strip()
-
-    # カレンダーオーナー解決
-    calendar_owner = parsed.get('_calendar_owner')
-    if not calendar_owner:
-        token_info = _resolve_calendar_owner(bot, guild_id, parsed.get('calendar_name'))
-        calendar_owner = token_info.get('_doc_id') or token_info.get('authenticated_by') if token_info else None
 
     event_id = bot.db_manager.add_event(
         guild_id=guild_id,
@@ -1828,21 +1874,24 @@ async def _handle_edit_event_direct(
         if missing_tags:
             return f"❌ 未登録のタグがあります: {', '.join(missing_tags)}"
         updates['tags'] = tags
+    # イベントのカレンダーオーナーを特定
+    cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+
     if 'color_name' in parsed:
         color_name = parsed.get('color_name')
-        if color_name:
-            preset = bot.db_manager.get_color_preset(guild_id, color_name)
+        if color_name and cal_owner:
+            preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
             if not preset:
                 return f"❌ 色名「{color_name}」が登録されていません。"
         updates['color_name'] = color_name
 
     # recurrence変更時の色自動再割当
-    if 'recurrence' in parsed and 'color_name' not in parsed:
+    if 'recurrence' in parsed and 'color_name' not in parsed and cal_owner:
         new_recurrence = parsed.get('recurrence')
         new_nth_weeks = parsed.get('nth_weeks') or (
             json.loads(event['nth_weeks']) if event.get('nth_weeks') else None
         )
-        auto_color = _auto_assign_color(bot.db_manager, guild_id, new_recurrence, new_nth_weeks)
+        auto_color = _auto_assign_color(bot.db_manager, guild_id, cal_owner, new_recurrence, new_nth_weeks)
         if auto_color:
             updates['color_name'] = auto_color['name']
 
@@ -1875,15 +1924,13 @@ async def _handle_edit_event_direct(
         if 'color_name' in updates:
             color_name = updates.get('color_name')
             color_id = None
-            if color_name:
-                preset = bot.db_manager.get_color_preset(guild_id, color_name)
+            if color_name and cal_owner:
+                preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
                 color_id = preset['color_id'] if preset else None
             if color_id:
                 google_updates['colorId'] = color_id
 
         if google_updates:
-            # イベントのカレンダーオーナーを使用
-            cal_owner = event.get('calendar_owner') or event.get('created_by', '')
             cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
             if not cal_mgr:
                 return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
@@ -1942,10 +1989,16 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
     if missing_tags:
         return f"❌ 未登録のタグがあります: {', '.join(missing_tags)}"
 
+    # カレンダーオーナーを先に解決（色バリデーションに必要）
+    calendar_owner = parsed.get('_calendar_owner')
+    if not calendar_owner:
+        token_info = _resolve_calendar_owner(bot, guild_id, parsed.get('calendar_name'))
+        calendar_owner = token_info.get('_doc_id') or token_info.get('authenticated_by') if token_info else None
+
     color_name = parsed.get('color_name')
     color_id = None
-    if color_name:
-        preset = bot.db_manager.get_color_preset(guild_id, color_name)
+    if color_name and calendar_owner:
+        preset = bot.db_manager.get_color_preset(guild_id, calendar_owner, color_name)
         if not preset:
             return f"❌ 色名「{color_name}」が登録されていません。"
         color_id = preset['color_id']
@@ -1960,12 +2013,6 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
     url_section = _build_url_description_section(x_url, vrc_group_url, official_url)
     if url_section:
         cal_description = f"{raw_description}\n\n{url_section}".strip()
-
-    # カレンダーオーナー解決
-    calendar_owner = parsed.get('_calendar_owner')
-    if not calendar_owner:
-        token_info = _resolve_calendar_owner(bot, guild_id, parsed.get('calendar_name'))
-        calendar_owner = token_info.get('_doc_id') or token_info.get('authenticated_by') if token_info else None
 
     # データベースに保存
     event_id = bot.db_manager.add_event(
@@ -2055,6 +2102,9 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
 
     event = events[0]
 
+    # イベントのカレンダーオーナーを特定
+    cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+
     # 更新内容を適用
     updates = {}
     if 'time' in parsed: updates['time'] = parsed['time']
@@ -2068,19 +2118,19 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
         updates['tags'] = tags
     if 'color_name' in parsed:
         color_name = parsed.get('color_name')
-        if color_name:
-            preset = bot.db_manager.get_color_preset(guild_id, color_name)
+        if color_name and cal_owner:
+            preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
             if not preset:
                 return f"❌ 色名「{color_name}」が登録されていません。"
         updates['color_name'] = color_name
 
     # recurrence変更時の色自動再割当
-    if 'recurrence' in parsed and 'color_name' not in parsed:
+    if 'recurrence' in parsed and 'color_name' not in parsed and cal_owner:
         new_recurrence = parsed.get('recurrence')
         new_nth_weeks = parsed.get('nth_weeks') or (
             json.loads(event['nth_weeks']) if event.get('nth_weeks') else None
         )
-        auto_color = _auto_assign_color(bot.db_manager, guild_id, new_recurrence, new_nth_weeks)
+        auto_color = _auto_assign_color(bot.db_manager, guild_id, cal_owner, new_recurrence, new_nth_weeks)
         if auto_color:
             updates['color_name'] = auto_color['name']
 
@@ -2114,14 +2164,13 @@ async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, 
         if 'color_name' in updates:
             color_name = updates.get('color_name')
             color_id = None
-            if color_name:
-                preset = bot.db_manager.get_color_preset(guild_id, color_name)
+            if color_name and cal_owner:
+                preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
                 color_id = preset['color_id'] if preset else None
             if color_id:
                 google_updates['colorId'] = color_id
 
         if google_updates:
-            cal_owner = event.get('calendar_owner') or event.get('created_by', '')
             cal_mgr = bot.get_calendar_manager_for_user(interaction.guild_id, cal_owner) if cal_owner else None
             if not cal_mgr:
                 return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
@@ -2533,10 +2582,84 @@ def create_tag_group_list_embed(groups: List[Dict[str, Any]], tags: List[Dict[st
     return embed
 
 async def _update_legend_event_by_guild(bot: CalendarBot, guild_id: str):
-    """guild_idベースで凡例イベントを全認証カレンダーに更新"""
+    """guild_idベースで凡例イベントを全認証カレンダーに更新（各カレンダー固有の色プリセットを反映）"""
     groups = bot.db_manager.list_tag_groups(guild_id)
     tags = bot.db_manager.list_tags(guild_id)
-    presets = bot.db_manager.list_color_presets(guild_id)
+
+    # タグ部分は全カレンダー共通
+    tag_lines = ["\n【タググループ】"]
+    tags_by_group: Dict[int, List[Dict[str, Any]]] = {}
+    for tag in tags:
+        tags_by_group.setdefault(tag['group_id'], []).append(tag)
+    for group in groups:
+        tag_lines.append(f"- {group['name']}: {group.get('description','')}")
+        for tag in tags_by_group.get(group['id'], []):
+            tag_lines.append(f"  - {tag['name']}: {tag.get('description','')}")
+    if not groups:
+        tag_lines.append("- 登録なし")
+
+    summary = "色/タグ 凡例"
+
+    # 全認証カレンダーに凡例を作成/更新（各カレンダー固有の色プリセットを使用）
+    all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
+    for token_data in all_tokens:
+        user_id = token_data.get("_doc_id") or token_data.get("authenticated_by")
+        if user_id == "google":
+            user_id = token_data.get("authenticated_by", "")
+        if not user_id:
+            continue
+        cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
+        if not cal_mgr:
+            continue
+
+        # このカレンダー固有の色プリセットを取得
+        presets = bot.db_manager.list_color_presets(guild_id, user_id)
+        lines = ["【色プリセット】"]
+        if presets:
+            for p in presets:
+                rt = p.get('recurrence_type')
+                rt_label = ""
+                if rt:
+                    cat_labels = {c["key"]: c["label"] for c in COLOR_CATEGORIES}
+                    rt_label = f" → {cat_labels.get(rt, rt)}"
+                lines.append(f"- {p['name']} (colorId {p['color_id']}){rt_label}: {p.get('description','')}")
+        else:
+            lines.append("- 登録なし")
+        lines.extend(tag_lines)
+        description = "\n".join(lines)
+
+        legend_key = f"legend_event_id:{guild_id}:{user_id}"
+        legend_event_id = bot.db_manager.get_setting(legend_key, "")
+
+        try:
+            if legend_event_id:
+                cal_mgr.update_event(legend_event_id, {
+                    "summary": summary,
+                    "description": description
+                })
+            else:
+                start_date = datetime(2000, 1, 1)
+                end_date = datetime(2100, 1, 1)
+                event_body = {
+                    "summary": summary,
+                    "description": description,
+                    "start": {"date": start_date.strftime('%Y-%m-%d')},
+                    "end": {"date": end_date.strftime('%Y-%m-%d')}
+                }
+                event = cal_mgr.service.events().insert(
+                    calendarId=cal_mgr.calendar_id,
+                    body=event_body
+                ).execute()
+                bot.db_manager.update_setting(legend_key, event['id'])
+        except Exception as e:
+            print(f"Legend event update failed for guild {guild_id}, user {user_id}: {e}")
+
+
+async def _update_legend_event_for_user(bot: CalendarBot, guild_id: str, user_id: str):
+    """特定カレンダーの凡例イベントのみ更新"""
+    groups = bot.db_manager.list_tag_groups(guild_id)
+    tags = bot.db_manager.list_tags(guild_id)
+    presets = bot.db_manager.list_color_presets(guild_id, user_id)
 
     lines = ["【色プリセット】"]
     if presets:
@@ -2564,43 +2687,35 @@ async def _update_legend_event_by_guild(bot: CalendarBot, guild_id: str):
     description = "\n".join(lines)
     summary = "色/タグ 凡例"
 
-    # 全認証カレンダーに凡例を作成/更新
-    all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
-    for token_data in all_tokens:
-        user_id = token_data.get("_doc_id") or token_data.get("authenticated_by")
-        if user_id == "google":
-            user_id = token_data.get("authenticated_by", "")
-        if not user_id:
-            continue
-        cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
-        if not cal_mgr:
-            continue
+    cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
+    if not cal_mgr:
+        return
 
-        legend_key = f"legend_event_id:{guild_id}:{user_id}"
-        legend_event_id = bot.db_manager.get_setting(legend_key, "")
+    legend_key = f"legend_event_id:{guild_id}:{user_id}"
+    legend_event_id = bot.db_manager.get_setting(legend_key, "")
 
-        try:
-            if legend_event_id:
-                cal_mgr.update_event(legend_event_id, {
-                    "summary": summary,
-                    "description": description
-                })
-            else:
-                start_date = datetime(2000, 1, 1)
-                end_date = datetime(2100, 1, 1)
-                event_body = {
-                    "summary": summary,
-                    "description": description,
-                    "start": {"date": start_date.strftime('%Y-%m-%d')},
-                    "end": {"date": end_date.strftime('%Y-%m-%d')}
-                }
-                event = cal_mgr.service.events().insert(
-                    calendarId=cal_mgr.calendar_id,
-                    body=event_body
-                ).execute()
-                bot.db_manager.update_setting(legend_key, event['id'])
-        except Exception as e:
-            print(f"Legend event update failed for guild {guild_id}, user {user_id}: {e}")
+    try:
+        if legend_event_id:
+            cal_mgr.update_event(legend_event_id, {
+                "summary": summary,
+                "description": description
+            })
+        else:
+            start_date = datetime(2000, 1, 1)
+            end_date = datetime(2100, 1, 1)
+            event_body = {
+                "summary": summary,
+                "description": description,
+                "start": {"date": start_date.strftime('%Y-%m-%d')},
+                "end": {"date": end_date.strftime('%Y-%m-%d')}
+            }
+            event = cal_mgr.service.events().insert(
+                calendarId=cal_mgr.calendar_id,
+                body=event_body
+            ).execute()
+            bot.db_manager.update_setting(legend_key, event['id'])
+    except Exception as e:
+        print(f"Legend event update failed for guild {guild_id}, user {user_id}: {e}")
 
 
 async def update_legend_event(bot: CalendarBot, interaction: discord.Interaction):

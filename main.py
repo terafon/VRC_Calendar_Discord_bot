@@ -114,9 +114,6 @@ def oauth_callback():
         authenticated_at=now,
     )
 
-    # 色セットアップ未完了フラグを設定
-    db_manager.mark_color_setup_pending(guild_id)
-
     return _oauth_success_html(), 200
 
 

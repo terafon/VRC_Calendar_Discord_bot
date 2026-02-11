@@ -158,14 +158,15 @@ class ConversationManager:
 │     └── { guild_id, user_id, created_at }
 │
 └── guilds/{guild_id}/                         # サーバーごとのデータ
-      │   └── { pending_color_setup, default_colors_initialized, ... }
+      │   └── { color_presets_migrated, ... }
       ├── events/{event_id}                    # 予定マスター
       ├── irregular_events/{doc_id}            # 不定期予定の個別日時
-      ├── color_presets/{name}                 # 色プリセット（recurrence_type対応）
       ├── tag_groups/{group_id}                # タググループ
       ├── tags/{tag_id}                        # タグ
       ├── guild_settings/config                # サーバー設定
       ├── oauth_tokens/{user_id}               # OAuthトークン（ユーザーごと）
+      │     ├── { ..., color_setup_done }      # 色初期設定完了フラグ
+      │     └── color_presets/{name}           # 色プリセット（カレンダー単位）
       └── notification_settings/config          # 通知設定
 ```
 
@@ -175,12 +176,11 @@ class ConversationManager:
 
 | フィールド | 型 | 説明 |
 |----------|------|------|
-| pending_color_setup | boolean | 色初期設定が未完了の場合 true |
-| default_colors_initialized | boolean | 色初期設定が完了済みの場合 true |
+| color_presets_migrated | boolean | 旧guild単位色プリセットのマイグレーション完了フラグ |
 
-### 5.3 color_presets ドキュメント
+### 5.3 color_presets ドキュメント（カレンダー単位）
 
-パス: `guilds/{guild_id}/color_presets/{name}`
+パス: `guilds/{guild_id}/oauth_tokens/{user_id}/color_presets/{name}`
 
 | フィールド | 型 | 説明 |
 |----------|------|------|
@@ -242,6 +242,9 @@ class ConversationManager:
 | display_name | string | カレンダーの表示名（例: "メインカレンダー"） |
 | description | string | 用途説明（例: "VRCイベント用"） |
 | is_default | boolean | デフォルトカレンダーか（最初の認証時にtrue） |
+| color_setup_done | boolean | 色初期設定が完了しているか（デフォルト: false） |
+
+サブコレクション: `color_presets/{name}` — カレンダーごとの色プリセット（5.3 color_presets ドキュメント参照）
 
 ### 5.5 notification_settings ドキュメント
 
@@ -453,11 +456,10 @@ OAuth 2.0 認証を使用します。各ユーザーが `/カレンダー 認証
 2. Bot が OAuth認証URL を ephemeral メッセージで送信
 3. ユーザーがブラウザで Google認証 → カレンダーアクセスを許可
 4. Google が Flask の /oauth/callback にリダイレクト
-5. コールバックで state 検証 → コードをトークンに交換 → Firestore に保存
-6. 色セットアップ未完了フラグ（pending_color_setup）を設定
-7. ブラウザに「認証成功」ページを表示（/色 初期設定 の実行を案内）
-8. ユーザーが Discord で /色 初期設定 を実行し、繰り返しタイプごとの色を設定
-9. 以降、Bot はそのトークンでユーザーのカレンダーを操作し、色を自動割当
+5. コールバックで state 検証 → コードをトークンに交換 → Firestore に保存（color_setup_done: false）
+6. ブラウザに「認証成功」ページを表示（/色 初期設定 の実行を案内）
+7. ユーザーが Discord で /色 初期設定 を実行し、自分のカレンダーの繰り返しタイプごとの色を設定
+8. 以降、Bot はそのトークンでユーザーのカレンダーを操作し、カレンダー固有の色を自動割当
 ```
 
 ### 8.3 スコープ

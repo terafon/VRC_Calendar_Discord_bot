@@ -219,14 +219,17 @@ def _build_server_context(server_context: Optional[Dict[str, Any]] = None) -> st
             tag_names = [t["name"] for t in tags]
             lines.append(f"利用可能: {' / '.join(tag_names)}")
 
-    color_presets = server_context.get("color_presets", [])
-    if color_presets:
-        lines.append("\n# 色プリセット（繰り返しタイプで自動割当。明示的指定しない限り設定不要）")
-        for preset in color_presets:
-            rt = preset.get('recurrence_type')
-            rt_label = f" [→ {rt}]" if rt else ""
-            desc = f"({preset['description']})" if preset.get("description") else ""
-            lines.append(f"- {preset['name']}{rt_label} {desc}")
+    color_presets_by_calendar = server_context.get("color_presets_by_calendar", {})
+    if color_presets_by_calendar:
+        lines.append("\n# 色プリセット（カレンダーごと。繰り返しタイプで自動割当。明示的指定しない限り設定不要）")
+        for cal_name, presets in color_presets_by_calendar.items():
+            if presets:
+                lines.append(f"## {cal_name}")
+                for preset in presets:
+                    rt = preset.get('recurrence_type')
+                    rt_label = f" [→ {rt}]" if rt else ""
+                    desc = f"({preset['description']})" if preset.get("description") else ""
+                    lines.append(f"- {preset['name']}{rt_label} {desc}")
 
     calendars = server_context.get("calendars", [])
     if calendars:
