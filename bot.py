@@ -691,6 +691,8 @@ def setup_commands(bot: CalendarBot):
         embed = discord.Embed(
             title="Google カレンダー認証",
             description=(
+                "**認証の前に**: 認証に使用するGoogleアカウントのメールアドレスをBot管理者に伝えてください。"
+                "OAuth同意画面のテストユーザーに登録されていないと認証できません。\n\n"
                 "以下のリンクをクリックして Google アカウントでカレンダーへのアクセスを許可してください。\n\n"
                 f"[認証ページを開く]({auth_url})\n\n"
                 "認証が完了するとブラウザに「認証成功」と表示されます。"
