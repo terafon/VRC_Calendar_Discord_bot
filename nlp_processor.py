@@ -107,7 +107,8 @@ VRChat上のイベント（集会、ワールド紹介、アバター試着会�
     "color_name": "収集済みの色名 or null",
     "x_url": "収集済みのXアカウントURL or null",
     "vrc_group_url": "収集済みのVRCグループURL or null",
-    "official_url": "収集済みの公式サイトURL or null"
+    "official_url": "収集済みの公式サイトURL or null",
+    "calendar_name": "登録先カレンダーの表示名 or null"
   }}
 }}
 
@@ -127,7 +128,8 @@ VRChat上のイベント（集会、ワールド紹介、アバター試着会�
     "color_name": "色名",
     "x_url": "XアカウントURL or null",
     "vrc_group_url": "VRCグループURL or null",
-    "official_url": "公式サイトURL or null"
+    "official_url": "公式サイトURL or null",
+    "calendar_name": "登録先カレンダーの表示名 or null"
   }},
   "search_query": {{
     "date_range": "today|this_week|next_week|this_month",
@@ -149,6 +151,11 @@ VRChat上のイベント（集会、ワールド紹介、アバター試着会�
   3. 公式サイトURL
 - 3つのURLは全て任意です。「なし」と回答された場合はnullにしてください。
 - action=add の場合、URLの質問が完了するまで status: complete にしないでください。
+
+# カレンダー選択のルール
+- カレンダーが1つしかない場合は質問不要で、calendar_name に null を設定してください。
+- カレンダーが複数ある場合、URLの質問の後にどのカレンダーに登録するか質問してください。
+- デフォルトカレンダーがある場合は「特に指定がなければ〇〇に登録します」と案内してください。
 
 # 色の割当ルール
 - 色は繰り返しタイプに基づいてシステムが自動で割り当てます。
@@ -220,6 +227,14 @@ def _build_server_context(server_context: Optional[Dict[str, Any]] = None) -> st
             rt_label = f" [→ {rt}]" if rt else ""
             desc = f"({preset['description']})" if preset.get("description") else ""
             lines.append(f"- {preset['name']}{rt_label} {desc}")
+
+    calendars = server_context.get("calendars", [])
+    if calendars:
+        lines.append("\n# 利用可能なカレンダー")
+        for cal in calendars:
+            default_mark = "（デフォルト）" if cal.get("is_default") else ""
+            desc = f" - {cal['description']}" if cal.get("description") else ""
+            lines.append(f"- {cal['display_name']}{default_mark}{desc}")
 
     event_names = server_context.get("event_names", [])
     if event_names:

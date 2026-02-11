@@ -165,7 +165,7 @@ class ConversationManager:
       ├── tag_groups/{group_id}                # タググループ
       ├── tags/{tag_id}                        # タグ
       ├── guild_settings/config                # サーバー設定
-      └── oauth_tokens/google                  # OAuthトークン
+      └── oauth_tokens/{user_id}               # OAuthトークン（ユーザーごと）
 ```
 
 ### 5.2 guilds ドキュメント（サーバー設定）
@@ -221,13 +221,14 @@ class ConversationManager:
 | google_calendar_events | string (JSON) | Googleカレンダーイベント情報 |
 | discord_channel_id | string | Discord通知先チャンネル |
 | created_by | string | 作成者のDiscord User ID |
+| calendar_owner | string | Googleカレンダー登録先ユーザーのDiscord User ID |
 | created_at | string | 作成日時（ISO 8601） |
 | updated_at | string | 更新日時（ISO 8601） |
 | is_active | boolean | 有効フラグ（論理削除用） |
 
 ### 5.3 oauth_tokens ドキュメント
 
-パス: `guilds/{guild_id}/oauth_tokens/google`
+パス: `guilds/{guild_id}/oauth_tokens/{user_id}`（ユーザーごとに1ドキュメント）
 
 | フィールド | 型 | 説明 |
 |----------|------|------|
@@ -237,6 +238,9 @@ class ConversationManager:
 | calendar_id | string | 対象カレンダーID |
 | authenticated_by | string | 認証したユーザーのDiscord User ID |
 | authenticated_at | string | 認証日時（ISO 8601） |
+| display_name | string | カレンダーの表示名（例: "メインカレンダー"） |
+| description | string | 用途説明（例: "VRCイベント用"） |
+| is_default | boolean | デフォルトカレンダーか（最初の認証時にtrue） |
 
 ## 6. API設計
 
@@ -275,9 +279,10 @@ class ConversationManager:
 | コマンド | パラメータ | 必要権限 | 説明 |
 |---------|-----------|---------|------|
 | `/カレンダー 認証` | なし | manage_guild | OAuth認証URLを発行（ephemeral） |
-| `/カレンダー 認証解除` | なし | manage_guild | OAuth認証を解除 |
-| `/カレンダー 認証状態` | なし | manage_guild | 認証方式・状態を表示 |
-| `/カレンダー 設定` | calendar_id | manage_guild | 使用するカレンダーIDを変更 |
+| `/カレンダー 認証解除` | なし | manage_guild | 自分のOAuth認証を解除 |
+| `/カレンダー 認証状態` | なし | manage_guild | 自分の認証方式・状態を表示 |
+| `/カレンダー 設定` | 表示名, カレンダーid, 説明, デフォルト | manage_guild | 自分のカレンダー設定を変更 |
+| `/カレンダー 一覧` | なし | manage_guild | サーバー内の認証済みカレンダー一覧を表示 |
 
 ### 6.2 HTTPエンドポイント
 
@@ -324,7 +329,8 @@ Gemini 2.0 Flash APIを使用してユーザーメッセージを解析し、以
     "color_name": "収集済みの色名 or null",
     "x_url": "収集済みのXアカウントURL or null",
     "vrc_group_url": "収集済みのVRCグループURL or null",
-    "official_url": "収集済みの公式サイトURL or null"
+    "official_url": "収集済みの公式サイトURL or null",
+    "calendar_name": "登録先カレンダーの表示名 or null"
   }
 }
 ```
@@ -347,7 +353,8 @@ Gemini 2.0 Flash APIを使用してユーザーメッセージを解析し、以
     "color_name": "色名",
     "x_url": "XアカウントURL or null",
     "vrc_group_url": "VRCグループURL or null",
-    "official_url": "公式サイトURL or null"
+    "official_url": "公式サイトURL or null",
+    "calendar_name": "登録先カレンダーの表示名 or null"
   },
   "search_query": {
     "date_range": "today|this_week|next_week|this_month",
@@ -370,7 +377,7 @@ Gemini 2.0 Flash APIを使用してユーザーメッセージを解析し、以
 
 NLPプロセッサーはユーザーに色を質問しません。色は繰り返しタイプに基づいてシステムが自動で割り当てます。ユーザーが明示的に色を指定した場合のみ、その色名が `color_name` に設定されます。
 
-質問の順序: 開催頻度 → 曜日 → 時刻 → タグ（任意） → URL（任意: X / VRCグループ / 公式サイト）
+質問の順序: 開催頻度 → 曜日 → 時刻 → タグ（任意） → URL（任意: X / VRCグループ / 公式サイト） → カレンダー選択（複数カレンダーがある場合のみ）
 
 ### 7.4 タグのグループ別選択ルール
 
@@ -412,7 +419,7 @@ NLPは登録済みタグのみを選択肢として提示します。ユーザ�
 
 ### 8.1 認証方式
 
-OAuth 2.0 認証を使用します。各サーバーの管理者が `/カレンダー 認証` を実行し、Google アカウントでカレンダーへのアクセスを許可する必要があります。
+OAuth 2.0 認証を使用します。各ユーザーが `/カレンダー 認証` を実行し、自分のGoogle アカウントでカレンダーへのアクセスを許可します。1つのサーバーで複数ユーザーがそれぞれのカレンダーを認証できます。
 
 ### 8.2 OAuth 2.0 認証フロー
 
