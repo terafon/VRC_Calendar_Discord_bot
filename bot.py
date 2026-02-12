@@ -601,9 +601,23 @@ def setup_commands(bot: CalendarBot):
             )
             return
 
+        # 変更前のプリセットを取得（colorId変更検出用）
+        old_preset = bot.db_manager.get_color_preset(guild_id, user_id, 名前)
         bot.db_manager.add_color_preset(guild_id, user_id, 名前, color_id, 説明)
         await _update_legend_event_for_user(bot, guild_id, user_id)
-        await interaction.followup.send(f"✅ 色プリセット「{名前}」を設定しました。", ephemeral=True)
+
+        # colorId が変更された場合、該当色の全予定を更新
+        msg = f"✅ 色プリセット「{名前}」を設定しました。"
+        if old_preset and old_preset.get('color_id') != color_id:
+            affected = bot.db_manager.get_events_by_color_name(guild_id, 名前)
+            # calendar_ownerがこのユーザーの予定のみ対象
+            affected = [e for e in affected if (e.get('calendar_owner') or e.get('created_by', '')) == user_id]
+            if affected:
+                cnt = await _batch_update_google_calendar_events(
+                    bot, guild_id, affected, {'colorId': color_id}
+                )
+                msg += f"\n📝 既存予定 {cnt} 件のカレンダー色を更新しました。"
+        await interaction.followup.send(msg, ephemeral=True)
 
     @color_group.command(name="削除", description="色プリセットを削除します")
     @app_commands.describe(名前="色名")
@@ -621,9 +635,44 @@ def setup_commands(bot: CalendarBot):
             )
             return
 
+        # 削除前に影響する予定を取得
+        affected = bot.db_manager.get_events_by_color_name(guild_id, 名前)
+        affected = [e for e in affected if (e.get('calendar_owner') or e.get('created_by', '')) == user_id]
+
         bot.db_manager.delete_color_preset(guild_id, user_id, 名前)
         await _update_legend_event_for_user(bot, guild_id, user_id)
-        await interaction.followup.send(f"✅ 色プリセット「{名前}」を削除しました。", ephemeral=True)
+
+        # 影響する予定の色を自動再割当
+        reassign_count = 0
+        clear_count = 0
+        for event in affected:
+            recurrence = event.get('recurrence')
+            nth_weeks_raw = event.get('nth_weeks')
+            nth_weeks = json.loads(nth_weeks_raw) if nth_weeks_raw else None
+            auto_color = _auto_assign_color(bot.db_manager, guild_id, user_id, recurrence, nth_weeks)
+            if auto_color:
+                bot.db_manager.update_event(event['id'], {'color_name': auto_color['name']})
+                # Google Calendar 色も更新
+                if event.get('google_calendar_events'):
+                    cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
+                    if cal_mgr:
+                        google_cal_data = json.loads(event['google_calendar_events'])
+                        ids = [ge['event_id'] for ge in google_cal_data]
+                        try:
+                            cal_mgr.update_events(ids, {'colorId': auto_color['color_id']})
+                        except Exception:
+                            pass
+                reassign_count += 1
+            else:
+                bot.db_manager.update_event(event['id'], {'color_name': None})
+                clear_count += 1
+
+        msg = f"✅ 色プリセット「{名前}」を削除しました。"
+        if reassign_count:
+            msg += f"\n🔄 {reassign_count} 件の予定に代替色を自動割当しました。"
+        if clear_count:
+            msg += f"\n⚠️ {clear_count} 件の予定の色設定をクリアしました（代替プリセットなし）。"
+        await interaction.followup.send(msg, ephemeral=True)
 
     bot.tree.add_command(color_group)
 
@@ -653,9 +702,56 @@ def setup_commands(bot: CalendarBot):
     async def tag_group_delete_command(interaction: discord.Interaction, id: int):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
+        # 削除前にグループ内のタグ名一覧を取得
+        tags_in_group = [
+            t['name'] for t in bot.db_manager.list_tags(guild_id)
+            if t.get('group_id') == id
+        ]
+
         bot.db_manager.delete_tag_group(guild_id, id)
         await update_legend_event(bot, interaction)
-        await interaction.followup.send(f"✅ タググループID {id} を削除しました。", ephemeral=True)
+
+        # 影響する予定から全タグを除去
+        if tags_in_group:
+            all_events = bot.db_manager.get_all_active_events(guild_id)
+            tag_groups = bot.db_manager.list_tag_groups(guild_id)
+            tags_list = bot.db_manager.list_tags(guild_id)
+            updated_count = 0
+            for event in all_events:
+                old_tags = json.loads(event.get('tags') or '[]')
+                new_tags = [t for t in old_tags if t not in tags_in_group]
+                if old_tags != new_tags:
+                    bot.db_manager.update_event(event['id'], {'tags': new_tags})
+                    # Google Calendar 説明欄を再構築
+                    if event.get('google_calendar_events'):
+                        cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+                        cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
+                        if cal_mgr:
+                            new_desc = _build_event_description(
+                                raw_description=event.get('description', ''),
+                                tags=new_tags if new_tags else None,
+                                tag_groups=[{'name': g['name'], 'tags': [t for t in tags_list if t.get('group_id') == g['id']]} for g in tag_groups],
+                                x_url=event.get('x_url'),
+                                vrc_group_url=event.get('vrc_group_url'),
+                                official_url=event.get('official_url'),
+                            )
+                            google_cal_data = json.loads(event['google_calendar_events'])
+                            ids = [ge['event_id'] for ge in google_cal_data]
+                            try:
+                                cal_mgr.update_events(ids, {
+                                    'description': new_desc,
+                                    'extendedProperties': {'private': {'tags': json.dumps(new_tags, ensure_ascii=False)}},
+                                })
+                            except Exception:
+                                pass
+                    updated_count += 1
+            msg = f"✅ タググループID {id} を削除しました。"
+            if updated_count:
+                msg += f"\n📝 {updated_count} 件の予定からタグを除去しました。"
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.followup.send(f"✅ タググループID {id} を削除しました。", ephemeral=True)
 
     @tag_group.command(name="追加", description="タグを追加/更新します")
     @app_commands.describe(group_id="グループID", 名前="タグ名", 説明="タグの説明")
@@ -671,9 +767,50 @@ def setup_commands(bot: CalendarBot):
     async def tag_delete_command(interaction: discord.Interaction, group_id: int, 名前: str):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
+        # 削除前に影響する予定を取得
+        affected = bot.db_manager.get_events_by_tag(guild_id, 名前)
+
         bot.db_manager.delete_tag(guild_id, group_id, 名前)
         await update_legend_event(bot, interaction)
-        await interaction.followup.send(f"✅ タグ「{名前}」を削除しました。", ephemeral=True)
+
+        # 影響する予定からタグを除去
+        tag_groups = bot.db_manager.list_tag_groups(guild_id)
+        tags_list = bot.db_manager.list_tags(guild_id)
+        updated_count = 0
+        for event in affected:
+            old_tags = json.loads(event.get('tags') or '[]')
+            new_tags = [t for t in old_tags if t != 名前]
+            bot.db_manager.update_event(event['id'], {'tags': new_tags})
+
+            # Google Calendar 説明欄を再構築
+            if event.get('google_calendar_events'):
+                cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+                cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
+                if cal_mgr:
+                    new_desc = _build_event_description(
+                        raw_description=event.get('description', ''),
+                        tags=new_tags if new_tags else None,
+                        tag_groups=[{'name': g['name'], 'tags': [t for t in tags_list if t.get('group_id') == g['id']]} for g in tag_groups],
+                        x_url=event.get('x_url'),
+                        vrc_group_url=event.get('vrc_group_url'),
+                        official_url=event.get('official_url'),
+                    )
+                    google_cal_data = json.loads(event['google_calendar_events'])
+                    ids = [ge['event_id'] for ge in google_cal_data]
+                    try:
+                        cal_mgr.update_events(ids, {
+                            'description': new_desc,
+                            'extendedProperties': {'private': {'tags': json.dumps(new_tags, ensure_ascii=False)}},
+                        })
+                    except Exception:
+                        pass
+            updated_count += 1
+
+        msg = f"✅ タグ「{名前}」を削除しました。"
+        if updated_count:
+            msg += f"\n📝 {updated_count} 件の予定からタグを除去しました。"
+        await interaction.followup.send(msg, ephemeral=True)
 
     bot.tree.add_command(tag_group)
 
@@ -1017,6 +1154,33 @@ def _auto_assign_color(db_manager: FirestoreManager, guild_id: str, user_id: str
     if not category:
         return None
     return db_manager.get_color_preset_by_recurrence(guild_id, user_id, category)
+
+
+async def _batch_update_google_calendar_events(
+    bot: CalendarBot,
+    guild_id: str,
+    events: List[Dict],
+    google_updates: Dict[str, Any],
+) -> int:
+    """複数予定のGoogle Calendarイベントを一括更新。更新成功件数を返す。"""
+    updated = 0
+    for event in events:
+        if not event.get('google_calendar_events'):
+            continue
+        cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+        if not cal_owner:
+            continue
+        cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner)
+        if not cal_mgr:
+            continue
+        google_cal_data = json.loads(event['google_calendar_events'])
+        google_event_ids = [ge['event_id'] for ge in google_cal_data]
+        try:
+            cal_mgr.update_events(google_event_ids, google_updates)
+            updated += 1
+        except Exception:
+            pass
+    return updated
 
 
 def _next_weekday_datetime(
@@ -1509,10 +1673,40 @@ class ColorSetupView(discord.ui.View):
         # 対象カレンダーの凡例イベントのみ更新
         await _update_legend_event_for_user(self.bot, self.guild_id, self.target_user_id)
 
+        # 既存予定で色未割当のものに自動割当
+        all_events = self.bot.db_manager.get_all_active_events(self.guild_id)
+        owner_events = [
+            e for e in all_events
+            if (e.get('calendar_owner') or e.get('created_by', '')) == self.target_user_id
+            and not e.get('color_name')
+        ]
+        auto_count = 0
+        for event in owner_events:
+            recurrence = event.get('recurrence')
+            nth_weeks_raw = event.get('nth_weeks')
+            nth_weeks = json.loads(nth_weeks_raw) if nth_weeks_raw else None
+            auto_color = _auto_assign_color(
+                self.bot.db_manager, self.guild_id, self.target_user_id, recurrence, nth_weeks
+            )
+            if auto_color:
+                self.bot.db_manager.update_event(event['id'], {'color_name': auto_color['name']})
+                if event.get('google_calendar_events'):
+                    cal_mgr = self.bot.get_calendar_manager_for_user(int(self.guild_id), self.target_user_id)
+                    if cal_mgr:
+                        google_cal_data = json.loads(event['google_calendar_events'])
+                        ids = [ge['event_id'] for ge in google_cal_data]
+                        try:
+                            cal_mgr.update_events(ids, {'colorId': auto_color['color_id']})
+                        except Exception:
+                            pass
+                auto_count += 1
+
         summary_lines = []
         for key, data in self.selections.items():
             color_info = GOOGLE_CALENDAR_COLORS.get(data["color_id"], {})
             summary_lines.append(f"• {data['name']}: {color_info.get('name', '?')}（colorId {data['color_id']}）")
+        if auto_count:
+            summary_lines.append(f"\n📝 既存予定 {auto_count} 件に色を自動割当しました。")
 
         await interaction.response.edit_message(
             content="✅ 色初期設定が完了しました！\n\n" + "\n".join(summary_lines),
