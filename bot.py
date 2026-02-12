@@ -663,6 +663,66 @@ def setup_commands(bot: CalendarBot):
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タググループ「{名前}」を追加しました。", ephemeral=True)
 
+    @tag_group.command(name="グループ名変更", description="タググループの名前を変更します")
+    @app_commands.describe(id="グループID", 新しい名前="新しいグループ名")
+    async def tag_group_rename_command(interaction: discord.Interaction, id: int, 新しい名前: str):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
+        # グループ存在確認
+        group = bot.db_manager.get_tag_group(guild_id, id)
+        if not group:
+            await interaction.followup.send(f"❌ タググループID {id} は存在しません。", ephemeral=True)
+            return
+
+        old_name = group['name']
+
+        # グループ名更新
+        bot.db_manager.update_tag_group(guild_id, id, name=新しい名前)
+        # 子タグの group_name 更新
+        bot.db_manager.update_tags_group_name(guild_id, id, 新しい名前)
+        # 凡例イベント更新
+        await update_legend_event(bot, interaction)
+
+        # このグループのタグを含む予定の Google Calendar 説明欄を再構築
+        tag_groups = bot.db_manager.list_tag_groups(guild_id)
+        tags_list = bot.db_manager.list_tags(guild_id)
+        tags_in_group = [t['name'] for t in tags_list if t.get('group_id') == id]
+
+        updated_count = 0
+        if tags_in_group:
+            all_events = bot.db_manager.get_all_active_events(guild_id)
+            for event in all_events:
+                event_tags = json.loads(event.get('tags') or '[]')
+                if not any(t in tags_in_group for t in event_tags):
+                    continue
+                if not event.get('google_calendar_events'):
+                    continue
+                cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+                cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
+                if not cal_mgr:
+                    continue
+                new_desc = _build_event_description(
+                    raw_description=event.get('description', ''),
+                    tags=event_tags if event_tags else None,
+                    tag_groups=[{'name': g['name'], 'tags': [t for t in tags_list if t.get('group_id') == g['id']]} for g in tag_groups],
+                    x_url=event.get('x_url'),
+                    vrc_group_url=event.get('vrc_group_url'),
+                    official_url=event.get('official_url'),
+                )
+                google_cal_data = json.loads(event['google_calendar_events'])
+                ids = [ge['event_id'] for ge in google_cal_data]
+                try:
+                    cal_mgr.update_events(ids, {'description': new_desc})
+                except Exception:
+                    pass
+                updated_count += 1
+
+        msg = f"✅ タググループ「{old_name}」を「{新しい名前}」に変更しました。"
+        if updated_count:
+            msg += f"\n📝 {updated_count} 件の予定の説明欄を更新しました。"
+        await interaction.followup.send(msg, ephemeral=True)
+
     @tag_group.command(name="グループ削除", description="タググループを削除します")
     @app_commands.describe(id="グループID")
     async def tag_group_delete_command(interaction: discord.Interaction, id: int):
