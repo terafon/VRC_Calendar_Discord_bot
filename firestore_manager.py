@@ -441,6 +441,18 @@ class FirestoreManager:
         if doc.exists:
             ref.update(updates)
 
+    def update_tags_group_name(self, guild_id: str, group_id: int, new_name: str):
+        """グループ内の全タグの group_name を更新"""
+        docs = (
+            self._guild_ref(guild_id).collection("tags")
+            .where(filter=firestore.FieldFilter("group_id", "==", group_id))
+            .get()
+        )
+        batch = self.db.batch()
+        for doc in docs:
+            batch.update(doc.reference, {"group_name": new_name})
+        batch.commit()
+
     def delete_tag_group(self, guild_id: str, group_id: int):
         """タググループを削除（タグもカスケード削除）"""
         guild_ref = self._guild_ref(guild_id)

@@ -53,9 +53,10 @@ COLOR_EMOJI = {
 
 
 def _create_color_palette_embeds() -> list:
-    """Google Calendar色パレットのEmbed一覧を作成（各色のカラーバーで実際の色を表示）"""
+    """Google Calendar色パレットのEmbed一覧を作成（各色のカラーバーで実際の色を表示）
+    グラファイト（凡例専用）は除外。"""
     embeds = []
-    for cid, info in GOOGLE_CALENDAR_COLORS.items():
+    for cid, info in USER_SELECTABLE_COLORS.items():
         hex_int = int(info['hex'].lstrip('#'), 16)
         emoji = COLOR_EMOJI.get(cid, "")
         embed = discord.Embed(
@@ -499,17 +500,17 @@ def setup_commands(bot: CalendarBot):
             )
             return
 
-        # Google Calendar色パレットをEmbed一覧で表示（カラーバーで実際の色が見える）
+        # Google Calendar色パレットをEmbed一覧で表示（グラファイト除外、10色）
         palette_embeds = _create_color_palette_embeds()
 
-        # 色パレット表示（1メッセージ最大10 Embed → 1-10を先に送信）
+        # 色パレット表示（10色なので1メッセージに収まる）
         await interaction.followup.send(
             content="🎨 **Google Calendar 色パレット**",
-            embeds=palette_embeds[:10],
+            embeds=palette_embeds,
             ephemeral=True,
         )
 
-        # 残りの色(11) + ウィザード本体
+        # ウィザード本体
         wizard_embed = discord.Embed(
             title="🎨 色初期設定ウィザード",
             description=(
@@ -520,7 +521,7 @@ def setup_commands(bot: CalendarBot):
         )
         view = ColorSetupView(interaction.user.id, guild_id, bot, target_user_id=user_id)
         await interaction.followup.send(
-            embeds=[palette_embeds[10], wizard_embed],
+            embeds=[wizard_embed],
             view=view,
             ephemeral=True,
         )
@@ -579,8 +580,8 @@ def setup_commands(bot: CalendarBot):
                 await interaction.followup.send(embeds=chunk, ephemeral=True)
 
     @color_group.command(name="追加", description="色プリセットを追加/更新します")
-    @app_commands.describe(名前="色名", color_id="GoogleカレンダーのcolorId", 説明="色の説明")
-    async def color_add_command(interaction: discord.Interaction, 名前: str, color_id: str, 説明: str = ""):
+    @app_commands.describe(名前="色名", 説明="色の説明")
+    async def color_add_command(interaction: discord.Interaction, 名前: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
         user_id = str(interaction.user.id)
@@ -594,12 +595,22 @@ def setup_commands(bot: CalendarBot):
             )
             return
 
-        if color_id == LEGEND_COLOR_ID:
-            await interaction.followup.send(
-                f"❌ colorId {LEGEND_COLOR_ID}（グラファイト）は凡例イベント専用のため選択できません。",
-                ephemeral=True,
-            )
+        # 色パレット表示 + SelectMenu で色を選択
+        palette_embeds = _create_color_palette_embeds()
+        view = ColorSelectForEventView(author_id=interaction.user.id)
+        await interaction.followup.send(
+            content="🎨 **色を選択してください**",
+            embeds=palette_embeds,
+            view=view,
+            ephemeral=True,
+        )
+
+        timed_out = await view.wait()
+        if timed_out or view.selected_color_id is None:
+            await interaction.followup.send("⏰ タイムアウトしました。もう一度やり直してください。", ephemeral=True)
             return
+
+        color_id = view.selected_color_id
 
         # 変更前のプリセットを取得（colorId変更検出用）
         old_preset = bot.db_manager.get_color_preset(guild_id, user_id, 名前)
@@ -635,44 +646,9 @@ def setup_commands(bot: CalendarBot):
             )
             return
 
-        # 削除前に影響する予定を取得
-        affected = bot.db_manager.get_events_by_color_name(guild_id, 名前)
-        affected = [e for e in affected if (e.get('calendar_owner') or e.get('created_by', '')) == user_id]
-
         bot.db_manager.delete_color_preset(guild_id, user_id, 名前)
         await _update_legend_event_for_user(bot, guild_id, user_id)
-
-        # 影響する予定の色を自動再割当
-        reassign_count = 0
-        clear_count = 0
-        for event in affected:
-            recurrence = event.get('recurrence')
-            nth_weeks_raw = event.get('nth_weeks')
-            nth_weeks = json.loads(nth_weeks_raw) if nth_weeks_raw else None
-            auto_color = _auto_assign_color(bot.db_manager, guild_id, user_id, recurrence, nth_weeks)
-            if auto_color:
-                bot.db_manager.update_event(event['id'], {'color_name': auto_color['name']})
-                # Google Calendar 色も更新
-                if event.get('google_calendar_events'):
-                    cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
-                    if cal_mgr:
-                        google_cal_data = json.loads(event['google_calendar_events'])
-                        ids = [ge['event_id'] for ge in google_cal_data]
-                        try:
-                            cal_mgr.update_events(ids, {'colorId': auto_color['color_id']})
-                        except Exception:
-                            pass
-                reassign_count += 1
-            else:
-                bot.db_manager.update_event(event['id'], {'color_name': None})
-                clear_count += 1
-
-        msg = f"✅ 色プリセット「{名前}」を削除しました。"
-        if reassign_count:
-            msg += f"\n🔄 {reassign_count} 件の予定に代替色を自動割当しました。"
-        if clear_count:
-            msg += f"\n⚠️ {clear_count} 件の予定の色設定をクリアしました（代替プリセットなし）。"
-        await interaction.followup.send(msg, ephemeral=True)
+        await interaction.followup.send(f"✅ 色プリセット「{名前}」を削除しました。", ephemeral=True)
 
     bot.tree.add_command(color_group)
 
@@ -696,6 +672,66 @@ def setup_commands(bot: CalendarBot):
         bot.db_manager.add_tag_group(guild_id, 名前, 説明)
         await update_legend_event(bot, interaction)
         await interaction.followup.send(f"✅ タググループ「{名前}」を追加しました。", ephemeral=True)
+
+    @tag_group.command(name="グループ名変更", description="タググループの名前を変更します")
+    @app_commands.describe(id="グループID", 新しい名前="新しいグループ名")
+    async def tag_group_rename_command(interaction: discord.Interaction, id: int, 新しい名前: str):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+
+        # グループ存在確認
+        group = bot.db_manager.get_tag_group(guild_id, id)
+        if not group:
+            await interaction.followup.send(f"❌ タググループID {id} は存在しません。", ephemeral=True)
+            return
+
+        old_name = group['name']
+
+        # グループ名更新
+        bot.db_manager.update_tag_group(guild_id, id, name=新しい名前)
+        # 子タグの group_name 更新
+        bot.db_manager.update_tags_group_name(guild_id, id, 新しい名前)
+        # 凡例イベント更新
+        await update_legend_event(bot, interaction)
+
+        # このグループのタグを含む予定の Google Calendar 説明欄を再構築
+        tag_groups = bot.db_manager.list_tag_groups(guild_id)
+        tags_list = bot.db_manager.list_tags(guild_id)
+        tags_in_group = [t['name'] for t in tags_list if t.get('group_id') == id]
+
+        updated_count = 0
+        if tags_in_group:
+            all_events = bot.db_manager.get_all_active_events(guild_id)
+            for event in all_events:
+                event_tags = json.loads(event.get('tags') or '[]')
+                if not any(t in tags_in_group for t in event_tags):
+                    continue
+                if not event.get('google_calendar_events'):
+                    continue
+                cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+                cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
+                if not cal_mgr:
+                    continue
+                new_desc = _build_event_description(
+                    raw_description=event.get('description', ''),
+                    tags=event_tags if event_tags else None,
+                    tag_groups=[{'name': g['name'], 'tags': [t for t in tags_list if t.get('group_id') == g['id']]} for g in tag_groups],
+                    x_url=event.get('x_url'),
+                    vrc_group_url=event.get('vrc_group_url'),
+                    official_url=event.get('official_url'),
+                )
+                google_cal_data = json.loads(event['google_calendar_events'])
+                ids = [ge['event_id'] for ge in google_cal_data]
+                try:
+                    cal_mgr.update_events(ids, {'description': new_desc})
+                except Exception:
+                    pass
+                updated_count += 1
+
+        msg = f"✅ タググループ「{old_name}」を「{新しい名前}」に変更しました。"
+        if updated_count:
+            msg += f"\n📝 {updated_count} 件の予定の説明欄を更新しました。"
+        await interaction.followup.send(msg, ephemeral=True)
 
     @tag_group.command(name="グループ削除", description="タググループを削除します")
     @app_commands.describe(id="グループID")
@@ -2769,26 +2805,34 @@ def create_tag_group_list_embed(groups: List[Dict[str, Any]], tags: List[Dict[st
     return embed
 
 def _upsert_legend_event(cal_mgr, db_manager, legend_key: str, legend_event_id: str, summary: str, description: str):
-    """凡例イベントの作成/更新共通処理"""
+    """凡例イベントの作成/更新共通処理。既存イベントが見つからない場合は新規作成する。"""
     legend_start = "2026-01-01"
     legend_end = "2030-12-31"
-    try:
-        event_body = {
-            "summary": summary,
-            "description": description,
-            "colorId": LEGEND_COLOR_ID,
-            "start": {"date": legend_start},
-            "end": {"date": legend_end},
-        }
-        if legend_event_id:
+    event_body = {
+        "summary": summary,
+        "description": description,
+        "colorId": LEGEND_COLOR_ID,
+        "start": {"date": legend_start},
+        "end": {"date": legend_end},
+    }
+
+    # 既存イベントの更新を試行
+    if legend_event_id:
+        try:
             cal_mgr.update_event(legend_event_id, event_body)
-        else:
-            event = cal_mgr.service.events().insert(
-                calendarId=cal_mgr.calendar_id, body=event_body
-            ).execute()
-            db_manager.update_setting(legend_key, event['id'])
+            return
+        except Exception as e:
+            # イベントが削除済み等で更新失敗 → 新規作成にフォールバック
+            print(f"Legend event update failed, will recreate ({legend_key}): {e}")
+
+    # 新規作成
+    try:
+        event = cal_mgr.service.events().insert(
+            calendarId=cal_mgr.calendar_id, body=event_body
+        ).execute()
+        db_manager.update_setting(legend_key, event['id'])
     except Exception as e:
-        print(f"Legend event upsert failed ({legend_key}): {e}")
+        print(f"Legend event create failed ({legend_key}): {e}")
 
 
 async def _update_color_legend_for_user(bot: CalendarBot, guild_id: str, user_id: str):
