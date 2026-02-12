@@ -471,7 +471,36 @@ OAuth 2.0 認証を使用します。各ユーザーが `/カレンダー 認証
 https://www.googleapis.com/auth/calendar
 ```
 
-### 8.4 イベント説明欄フォーマット
+### 8.4 繰り返しイベントの登録方式（RRULE）
+
+繰り返し予定（weekly/biweekly/nth_week）は、Google Calendar の RRULE（RFC 5545）を使用して単一の繰り返しイベントとして登録されます。
+
+#### RRULE パターン
+
+| 繰り返しタイプ | RRULE 例 |
+|---------------|---------|
+| 毎週 | `RRULE:FREQ=WEEKLY;BYDAY=SA` |
+| 隔週 | `RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=WE` |
+| 第n週 | `RRULE:FREQ=MONTHLY;BYDAY=1WE,3WE,4WE` |
+
+- 不定期（irregular）イベントはRRULEを使用せず、個別イベントとして登録
+- `RecurrenceCalculator.to_rrule()` でRRULE文字列を生成
+- `calendar_manager.create_recurring_event()` で1つの繰り返しイベントとしてGoogle Calendarに登録
+
+#### google_calendar_events フィールドのデータ形式
+
+```json
+[{"event_id": "xyz789", "rrule": "RRULE:FREQ=WEEKLY;BYDAY=SA"}]
+```
+
+配列構造を維持しているため、既存の `[ge['event_id'] for ge in ...]` パターンとの互換性があります。
+
+#### 編集時の動作
+
+- **構造的変更**（recurrence/time/weekday/nth_weeks/duration_minutes）: 旧Google Calendarイベントを削除し、新しいRRULEで再作成
+- **属性のみの変更**（event_name/description/color/tags/URL）: 既存イベントを更新
+
+### 8.5 イベント説明欄フォーマット
 
 Google Calendarに登録する予定の説明欄（description）は `_build_event_description` で統一フォーマットに整形されます。
 
@@ -492,7 +521,7 @@ VRCグループ: https://...
 - いずれかのグループに属さないタグは単独表示
 - 各セクションはデータがある場合のみ出力される（空セクションは省略）
 
-### 8.5 凡例イベントアーキテクチャ
+### 8.6 凡例イベントアーキテクチャ
 
 Googleカレンダー上に「色プリセット凡例」と「タグ凡例」の2つの凡例イベントを作成し、カレンダーの色・タグ設定を視覚的に確認できるようにします。
 
@@ -506,7 +535,7 @@ Googleカレンダー上に「色プリセット凡例」と「タグ凡例」�
 #### 凡例イベントの特徴
 
 - **colorId**: グラファイト（colorId 8）で統一（`LEGEND_COLOR_ID`）
-- **期間**: 2000-01-01 〜 2100-01-01（終日イベント）
+- **期間**: 2026-01-01 〜 2030-12-31（終日イベント）
 - **更新タイミング**: 色プリセット変更時（色凡例）、タグ変更時（タグ凡例）、予定登録フロー内
 
 #### 凡例更新関数
