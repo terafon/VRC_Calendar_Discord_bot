@@ -2841,19 +2841,19 @@ def create_tag_group_list_embed(groups: List[Dict[str, Any]], tags: List[Dict[st
 
 def _upsert_legend_event(cal_mgr, db_manager, legend_key: str, legend_event_id: str, summary: str, description: str):
     """凡例イベントの作成/更新共通処理"""
+    legend_start = "2026-01-01"
+    legend_end = "2030-12-31"
     try:
         event_body = {
             "summary": summary,
             "description": description,
             "colorId": LEGEND_COLOR_ID,
+            "start": {"date": legend_start},
+            "end": {"date": legend_end},
         }
         if legend_event_id:
             cal_mgr.update_event(legend_event_id, event_body)
         else:
-            event_body.update({
-                "start": {"date": "2000-01-01"},
-                "end": {"date": "2100-01-01"},
-            })
             event = cal_mgr.service.events().insert(
                 calendarId=cal_mgr.calendar_id, body=event_body
             ).execute()
