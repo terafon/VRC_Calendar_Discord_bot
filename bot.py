@@ -53,9 +53,10 @@ COLOR_EMOJI = {
 
 
 def _create_color_palette_embeds() -> list:
-    """Google Calendar色パレットのEmbed一覧を作成（各色のカラーバーで実際の色を表示）"""
+    """Google Calendar色パレットのEmbed一覧を作成（各色のカラーバーで実際の色を表示）
+    グラファイト（凡例専用）は除外。"""
     embeds = []
-    for cid, info in GOOGLE_CALENDAR_COLORS.items():
+    for cid, info in USER_SELECTABLE_COLORS.items():
         hex_int = int(info['hex'].lstrip('#'), 16)
         emoji = COLOR_EMOJI.get(cid, "")
         embed = discord.Embed(
@@ -499,17 +500,17 @@ def setup_commands(bot: CalendarBot):
             )
             return
 
-        # Google Calendar色パレットをEmbed一覧で表示（カラーバーで実際の色が見える）
+        # Google Calendar色パレットをEmbed一覧で表示（グラファイト除外、10色）
         palette_embeds = _create_color_palette_embeds()
 
-        # 色パレット表示（1メッセージ最大10 Embed → 1-10を先に送信）
+        # 色パレット表示（10色なので1メッセージに収まる）
         await interaction.followup.send(
             content="🎨 **Google Calendar 色パレット**",
-            embeds=palette_embeds[:10],
+            embeds=palette_embeds,
             ephemeral=True,
         )
 
-        # 残りの色(11) + ウィザード本体
+        # ウィザード本体
         wizard_embed = discord.Embed(
             title="🎨 色初期設定ウィザード",
             description=(
@@ -520,7 +521,7 @@ def setup_commands(bot: CalendarBot):
         )
         view = ColorSetupView(interaction.user.id, guild_id, bot, target_user_id=user_id)
         await interaction.followup.send(
-            embeds=[palette_embeds[10], wizard_embed],
+            embeds=[wizard_embed],
             view=view,
             ephemeral=True,
         )
