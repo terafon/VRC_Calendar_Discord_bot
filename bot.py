@@ -580,8 +580,8 @@ def setup_commands(bot: CalendarBot):
                 await interaction.followup.send(embeds=chunk, ephemeral=True)
 
     @color_group.command(name="追加", description="色プリセットを追加/更新します")
-    @app_commands.describe(名前="色名", color_id="GoogleカレンダーのcolorId", 説明="色の説明")
-    async def color_add_command(interaction: discord.Interaction, 名前: str, color_id: str, 説明: str = ""):
+    @app_commands.describe(名前="色名", 説明="色の説明")
+    async def color_add_command(interaction: discord.Interaction, 名前: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
         user_id = str(interaction.user.id)
@@ -595,12 +595,22 @@ def setup_commands(bot: CalendarBot):
             )
             return
 
-        if color_id == LEGEND_COLOR_ID:
-            await interaction.followup.send(
-                f"❌ colorId {LEGEND_COLOR_ID}（グラファイト）は凡例イベント専用のため選択できません。",
-                ephemeral=True,
-            )
+        # 色パレット表示 + SelectMenu で色を選択
+        palette_embeds = _create_color_palette_embeds()
+        view = ColorSelectForEventView(author_id=interaction.user.id)
+        await interaction.followup.send(
+            content="🎨 **色を選択してください**",
+            embeds=palette_embeds,
+            view=view,
+            ephemeral=True,
+        )
+
+        timed_out = await view.wait()
+        if timed_out or view.selected_color_id is None:
+            await interaction.followup.send("⏰ タイムアウトしました。もう一度やり直してください。", ephemeral=True)
             return
+
+        color_id = view.selected_color_id
 
         # 変更前のプリセットを取得（colorId変更検出用）
         old_preset = bot.db_manager.get_color_preset(guild_id, user_id, 名前)
