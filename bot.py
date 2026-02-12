@@ -1846,12 +1846,6 @@ class ColorSetupView(discord.ui.View):
 
     async def _finalize(self, interaction: discord.Interaction):
         """選択完了後、色プリセットを一括登録（カレンダー単位）"""
-        # 既存プリセットのcolorIdを保存（変更検出用）
-        old_presets = {
-            p['name']: p['color_id']
-            for p in self.bot.db_manager.list_color_presets(self.guild_id, self.target_user_id)
-        }
-
         presets_data = []
         for key, data in self.selections.items():
             presets_data.append({
@@ -1879,20 +1873,18 @@ class ColorSetupView(discord.ui.View):
         # 対象カレンダーの凡例イベントを更新
         await _update_legend_event_for_user(self.bot, self.guild_id, self.target_user_id)
 
-        # colorIdが変更された色プリセットの既存イベントを更新
+        # 色プリセットに基づいて既存イベントのGoogle Calendar色を同期
         color_update_count = 0
         for key, data in self.selections.items():
             color_name = data["name"]
             new_color_id = data["color_id"]
-            old_color_id = old_presets.get(color_name)
-            if old_color_id and old_color_id != new_color_id:
-                affected = self.bot.db_manager.get_events_by_color_name(self.guild_id, color_name)
-                affected = [e for e in affected if (e.get('calendar_owner') or e.get('created_by', '')) == self.target_user_id]
-                if affected:
-                    cnt = await _batch_update_google_calendar_events(
-                        self.bot, self.guild_id, affected, {'colorId': new_color_id}
-                    )
-                    color_update_count += cnt
+            affected = self.bot.db_manager.get_events_by_color_name(self.guild_id, color_name)
+            affected = [e for e in affected if (e.get('calendar_owner') or e.get('created_by', '')) == self.target_user_id]
+            if affected:
+                cnt = await _batch_update_google_calendar_events(
+                    self.bot, self.guild_id, affected, {'colorId': new_color_id}
+                )
+                color_update_count += cnt
 
         # 既存予定で色未割当のものに自動割当
         all_events = self.bot.db_manager.get_all_active_events(self.guild_id)
