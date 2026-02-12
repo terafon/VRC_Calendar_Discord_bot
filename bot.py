@@ -1670,7 +1670,20 @@ class ColorSetupView(discord.ui.View):
 
         self.bot.db_manager.initialize_default_color_presets(self.guild_id, self.target_user_id, presets_data)
 
-        # 対象カレンダーの凡例イベントのみ更新
+        # サマリー構築 → 先にインタラクション応答（3秒タイムアウト回避）
+        summary_lines = []
+        for key, data in self.selections.items():
+            color_info = GOOGLE_CALENDAR_COLORS.get(data["color_id"], {})
+            summary_lines.append(f"• {data['name']}: {color_info.get('name', '?')}（colorId {data['color_id']}）")
+
+        await interaction.response.edit_message(
+            content="✅ 色初期設定が完了しました！\n\n" + "\n".join(summary_lines) + "\n\n⏳ 凡例・既存予定を更新中...",
+            view=None,
+        )
+        self.stop()
+
+        # 重い処理はインタラクション応答後に実行
+        # 対象カレンダーの凡例イベントを更新
         await _update_legend_event_for_user(self.bot, self.guild_id, self.target_user_id)
 
         # 既存予定で色未割当のものに自動割当
@@ -1701,18 +1714,14 @@ class ColorSetupView(discord.ui.View):
                             pass
                 auto_count += 1
 
-        summary_lines = []
-        for key, data in self.selections.items():
-            color_info = GOOGLE_CALENDAR_COLORS.get(data["color_id"], {})
-            summary_lines.append(f"• {data['name']}: {color_info.get('name', '?')}（colorId {data['color_id']}）")
+        # 処理完了後にメッセージを最終更新
+        final_content = "✅ 色初期設定が完了しました！\n\n" + "\n".join(summary_lines)
         if auto_count:
-            summary_lines.append(f"\n📝 既存予定 {auto_count} 件に色を自動割当しました。")
-
-        await interaction.response.edit_message(
-            content="✅ 色初期設定が完了しました！\n\n" + "\n".join(summary_lines),
-            view=None,
-        )
-        self.stop()
+            final_content += f"\n\n📝 既存予定 {auto_count} 件に色を自動割当しました。"
+        try:
+            await interaction.edit_original_response(content=final_content)
+        except Exception:
+            pass
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.author_id
