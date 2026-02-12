@@ -655,6 +655,19 @@ def setup_commands(bot: CalendarBot):
     # ---- タグ管理グループ ----
     tag_group = app_commands.Group(name="タグ", description="タグの管理")
 
+    async def tag_group_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[int]]:
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        groups = bot.db_manager.list_tag_groups(guild_id)
+        choices = []
+        for g in groups:
+            name = g["name"]
+            if current.lower() in name.lower() or current == "":
+                choices.append(app_commands.Choice(name=name, value=g["id"]))
+        return choices[:25]
+
     @tag_group.command(name="一覧", description="タググループとタグを表示します")
     async def tag_group_list_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -674,7 +687,8 @@ def setup_commands(bot: CalendarBot):
         await interaction.followup.send(f"✅ タググループ「{名前}」を追加しました。", ephemeral=True)
 
     @tag_group.command(name="グループ名変更", description="タググループの名前を変更します")
-    @app_commands.describe(id="グループID", 新しい名前="新しいグループ名")
+    @app_commands.describe(id="タググループ", 新しい名前="新しいグループ名")
+    @app_commands.autocomplete(id=tag_group_autocomplete)
     async def tag_group_rename_command(interaction: discord.Interaction, id: int, 新しい名前: str):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
@@ -734,7 +748,8 @@ def setup_commands(bot: CalendarBot):
         await interaction.followup.send(msg, ephemeral=True)
 
     @tag_group.command(name="グループ削除", description="タググループを削除します")
-    @app_commands.describe(id="グループID")
+    @app_commands.describe(id="タググループ")
+    @app_commands.autocomplete(id=tag_group_autocomplete)
     async def tag_group_delete_command(interaction: discord.Interaction, id: int):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
@@ -790,7 +805,8 @@ def setup_commands(bot: CalendarBot):
             await interaction.followup.send(f"✅ タググループID {id} を削除しました。", ephemeral=True)
 
     @tag_group.command(name="追加", description="タグを追加/更新します")
-    @app_commands.describe(group_id="グループID", 名前="タグ名", 説明="タグの説明")
+    @app_commands.describe(group_id="タググループ", 名前="タグ名", 説明="タグの説明")
+    @app_commands.autocomplete(group_id=tag_group_autocomplete)
     async def tag_add_command(interaction: discord.Interaction, group_id: int, 名前: str, 説明: str = ""):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
@@ -799,7 +815,8 @@ def setup_commands(bot: CalendarBot):
         await interaction.followup.send(f"✅ タグ「{名前}」を追加しました。", ephemeral=True)
 
     @tag_group.command(name="削除", description="タグを削除します")
-    @app_commands.describe(group_id="グループID", 名前="タグ名")
+    @app_commands.describe(group_id="タググループ", 名前="タグ名")
+    @app_commands.autocomplete(group_id=tag_group_autocomplete)
     async def tag_delete_command(interaction: discord.Interaction, group_id: int, 名前: str):
         await interaction.response.defer(ephemeral=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
