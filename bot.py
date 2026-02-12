@@ -1159,9 +1159,32 @@ def setup_commands(bot: CalendarBot):
 
         configured_by = settings.get("configured_by", "")
         if configured_by:
-            embed.set_footer(text=f"設定者: {configured_by}")
+            member = interaction.guild.get_member(int(configured_by))
+            configured_name = member.display_name if member else f"不明なユーザー ({configured_by})"
+            embed.set_footer(text=f"設定者: {configured_name}")
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @notification_group.command(name="テスト", description="通知をテスト送信します")
+    async def notification_test_command(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        if not interaction.guild_id:
+            await interaction.followup.send("サーバー内で使用してください。", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild_id)
+        settings = bot.db_manager.get_notification_settings(guild_id)
+
+        if not settings or not settings.get("enabled"):
+            await interaction.followup.send("❌ 通知が設定されていないか、停止中です。`/通知 設定` で設定してください。", ephemeral=True)
+            return
+
+        try:
+            await bot._send_scheduled_notification(guild_id, settings)
+            await interaction.followup.send("✅ テスト通知を送信しました。通知先チャンネルを確認してください。", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ 通知送信に失敗しました: {e}", ephemeral=True)
 
     bot.tree.add_command(notification_group)
 
