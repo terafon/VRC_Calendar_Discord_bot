@@ -232,6 +232,16 @@ class GoogleCalendarManager:
         
         return None
 
+    def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
+        """単一イベントを取得。存在しない場合はNoneを返す。"""
+        try:
+            return self.service.events().get(
+                calendarId=self.calendar_id,
+                eventId=event_id
+            ).execute()
+        except Exception:
+            return None
+
     def get_color_palette(self) -> Dict[str, Any]:
         """Googleカレンダーの色パレットを取得"""
         return self.service.colors().get().execute()

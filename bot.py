@@ -169,6 +169,10 @@ class CalendarBot(commands.Bot):
         if not self.check_scheduled_notifications.is_running():
             self.check_scheduled_notifications.start()
 
+        # Google Calendarイベント整合性チェック開始
+        if not self.sync_calendar_events.is_running():
+            self.sync_calendar_events.start()
+
     @tasks.loop(minutes=1)
     async def cleanup_sessions(self):
         """期限切れの会話セッションを定期的にクリーンアップ"""
@@ -224,6 +228,113 @@ class CalendarBot(commands.Bot):
 
     @check_scheduled_notifications.before_loop
     async def before_check_scheduled_notifications(self):
+        await self.wait_until_ready()
+
+    @tasks.loop(minutes=30)
+    async def sync_calendar_events(self):
+        """30分ごとにGoogle Calendarイベントの整合性をチェックし、不正な変更を復元する"""
+        import traceback
+
+        for guild in self.guilds:
+            guild_id = str(guild.id)
+            try:
+                all_tokens = self.db_manager.get_all_oauth_tokens(guild_id)
+                if not all_tokens:
+                    continue
+
+                active_events = self.db_manager.get_all_active_events(guild_id)
+
+                # イベントを calendar_owner でグループ化
+                events_by_owner: Dict[str, List[Dict[str, Any]]] = {}
+                for event in active_events:
+                    owner = event.get('calendar_owner', '')
+                    if owner:
+                        events_by_owner.setdefault(owner, []).append(event)
+
+                for cal_owner, events in events_by_owner.items():
+                    try:
+                        cal_mgr = self.get_calendar_manager_for_user(int(guild_id), cal_owner)
+                        if not cal_mgr:
+                            continue
+
+                        for event in events:
+                            try:
+                                await self._sync_single_event(guild_id, event, cal_mgr, cal_owner)
+                            except Exception as e:
+                                print(f"[sync] Error syncing event {event.get('id')} in guild {guild_id}: {e}")
+
+                    except Exception as e:
+                        print(f"[sync] Error processing calendar owner {cal_owner} in guild {guild_id}: {e}")
+                        traceback.print_exc()
+
+                # 凡例イベントも同期
+                try:
+                    await _update_legend_event_by_guild(self, guild_id)
+                except Exception as e:
+                    print(f"[sync] Error syncing legend events for guild {guild_id}: {e}")
+
+            except Exception as e:
+                print(f"[sync] Error processing guild {guild_id}: {e}")
+                traceback.print_exc()
+
+    async def _sync_single_event(
+        self, guild_id: str, event: Dict[str, Any],
+        cal_mgr: 'GoogleCalendarManager', cal_owner: str
+    ):
+        """単一イベントのGoogle Calendar整合性チェック・復元"""
+        google_cal_events_json = event.get('google_calendar_events')
+        if not google_cal_events_json:
+            # 不定期イベント等、Google Calendarイベントなし → スキップ
+            return
+
+        google_cal_data = json.loads(google_cal_events_json)
+        if not google_cal_data:
+            return
+
+        for ge in google_cal_data:
+            google_event_id = ge.get('event_id')
+            if not google_event_id:
+                continue
+
+            gcal_event = cal_mgr.get_event(google_event_id)
+
+            if gcal_event is None:
+                # イベントが削除されている → 再作成
+                print(f"[sync] Event {event['id']} ({event['event_name']}) deleted from Google Calendar, recreating...")
+                new_event_id = _recreate_calendar_event(self, guild_id, event, cal_mgr, cal_owner)
+                if new_event_id:
+                    print(f"[sync] Recreated event {event['id']} as {new_event_id}")
+                return  # 再作成したので残りのgoogle_event_idのチェックは不要
+
+            # イベントが存在する → summary/description/colorId を比較
+            expected = _rebuild_expected_event(self, guild_id, event, cal_owner)
+
+            needs_update = False
+            update_fields = {}
+
+            if gcal_event.get('summary', '') != expected.get('summary', ''):
+                update_fields['summary'] = expected['summary']
+                needs_update = True
+
+            if gcal_event.get('description', '') != expected.get('description', ''):
+                update_fields['description'] = expected['description']
+                needs_update = True
+
+            expected_color = expected.get('colorId')
+            actual_color = gcal_event.get('colorId')
+            if expected_color and expected_color != actual_color:
+                update_fields['colorId'] = expected_color
+                needs_update = True
+
+            if needs_update:
+                print(f"[sync] Event {event['id']} ({event['event_name']}) modified on Google Calendar, restoring: {list(update_fields.keys())}")
+                try:
+                    cal_mgr.update_event(google_event_id, update_fields)
+                except Exception as e:
+                    print(f"[sync] Failed to restore event {google_event_id}: {e}")
+
+    @sync_calendar_events.before_loop
+    async def before_sync_calendar_events(self):
         await self.wait_until_ready()
 
     async def _send_scheduled_notification(self, guild_id: str, settings: dict):
@@ -2981,3 +3092,101 @@ async def update_legend_event(bot: CalendarBot, interaction: discord.Interaction
         await interaction.followup.send("❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。", ephemeral=True)
         return
     await _update_legend_event_by_guild(bot, guild_id)
+
+
+def _rebuild_expected_event(
+    bot: CalendarBot, guild_id: str, event: Dict[str, Any], cal_owner: str
+) -> Dict[str, Any]:
+    """Firestoreイベントデータから「Google Calendarイベントのあるべき姿」を構築する"""
+    tags = json.loads(event.get('tags') or '[]')
+    tag_groups = bot.db_manager.list_tag_groups(guild_id)
+
+    description = _build_event_description(
+        raw_description=event.get('description', ''),
+        tags=tags if tags else None,
+        tag_groups=tag_groups if tags and tag_groups else None,
+        x_url=event.get('x_url'),
+        vrc_group_url=event.get('vrc_group_url'),
+        official_url=event.get('official_url'),
+    )
+
+    result: Dict[str, Any] = {
+        'summary': event.get('event_name', ''),
+        'description': description,
+    }
+
+    color_name = event.get('color_name')
+    if color_name and cal_owner:
+        preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
+        if preset:
+            result['colorId'] = preset['color_id']
+
+    return result
+
+
+def _recreate_calendar_event(
+    bot: CalendarBot, guild_id: str, event: Dict[str, Any],
+    cal_mgr: 'GoogleCalendarManager', cal_owner: str
+) -> Optional[str]:
+    """削除されたイベントをGoogle Calendarに再作成し、新しいイベントIDをFirestoreに保存する"""
+    recurrence = event.get('recurrence', '')
+    if recurrence == 'irregular':
+        # 不定期イベントは Google Calendar イベントなしのためスキップ
+        return None
+
+    weekday = event.get('weekday')
+    time_str = event.get('time')
+    if weekday is None or not time_str:
+        return None
+
+    nth_weeks = json.loads(event['nth_weeks']) if event.get('nth_weeks') else []
+
+    expected = _rebuild_expected_event(bot, guild_id, event, cal_owner)
+
+    color_name = event.get('color_name')
+    color_id = None
+    if color_name and cal_owner:
+        preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
+        if preset:
+            color_id = preset['color_id']
+
+    tags = json.loads(event.get('tags') or '[]')
+
+    try:
+        rrule = RecurrenceCalculator.to_rrule(
+            recurrence=recurrence,
+            nth_weeks=nth_weeks,
+            weekday=weekday,
+        )
+        start_dt = _next_weekday_datetime(
+            weekday, time_str,
+            recurrence=recurrence, nth_weeks=nth_weeks,
+        )
+        duration_minutes = event.get('duration_minutes', 60)
+        end_dt = start_dt + timedelta(minutes=duration_minutes)
+
+        google_event_id = cal_mgr.create_recurring_event(
+            summary=expected['summary'],
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            rrule=rrule,
+            description=expected['description'],
+            color_id=color_id,
+            extended_props={
+                "tags": json.dumps(tags, ensure_ascii=False),
+                "color_name": color_name or "",
+                "x_url": event.get('x_url') or "",
+                "vrc_group_url": event.get('vrc_group_url') or "",
+                "official_url": event.get('official_url') or "",
+            },
+        )
+
+        bot.db_manager.update_google_calendar_events(
+            event['id'],
+            [{"event_id": google_event_id, "rrule": rrule}]
+        )
+
+        return google_event_id
+    except Exception as e:
+        print(f"[sync] Failed to recreate event {event.get('id')}: {e}")
+        return None
