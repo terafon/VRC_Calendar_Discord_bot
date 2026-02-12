@@ -1180,9 +1180,47 @@ def setup_commands(bot: CalendarBot):
             await interaction.followup.send("❌ 通知が設定されていないか、停止中です。`/通知 設定` で設定してください。", ephemeral=True)
             return
 
+        channel_id = settings.get("channel_id")
+        if not channel_id:
+            await interaction.followup.send("❌ 通知先チャンネルが設定されていません。", ephemeral=True)
+            return
+
+        # チャンネル取得テスト
         try:
-            await bot._send_scheduled_notification(guild_id, settings)
+            channel = await bot.fetch_channel(int(channel_id))
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"❌ チャンネル <#{channel_id}> にアクセスする権限がありません。\n"
+                "Botがそのチャンネルにアクセスできるか確認してください。\n"
+                "（プライベートチャンネルの場合、Botをチャンネルメンバーに追加する必要があります）",
+                ephemeral=True
+            )
+            return
+        except discord.NotFound:
+            await interaction.followup.send(f"❌ チャンネル（ID: {channel_id}）が見つかりません。削除されている可能性があります。", ephemeral=True)
+            return
+        except Exception as e:
+            await interaction.followup.send(f"❌ チャンネル取得に失敗しました: {e}", ephemeral=True)
+            return
+
+        # イベント取得・フィルタ
+        events = bot.db_manager.get_this_week_events(guild_id)
+        calendar_owners = settings.get("calendar_owners", [])
+        if calendar_owners:
+            events = [e for e in events if e.get("calendar_owner") in calendar_owners]
+
+        embed = create_weekly_embed(events)
+
+        # 送信テスト
+        try:
+            await channel.send(content="🔔 **今週の予定通知（テスト）**", embed=embed)
             await interaction.followup.send("✅ テスト通知を送信しました。通知先チャンネルを確認してください。", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"❌ チャンネル <#{channel_id}> にメッセージを送信する権限がありません。\n"
+                "Botに「メッセージを送信」権限があるか確認してください。",
+                ephemeral=True
+            )
         except Exception as e:
             await interaction.followup.send(f"❌ 通知送信に失敗しました: {e}", ephemeral=True)
 
