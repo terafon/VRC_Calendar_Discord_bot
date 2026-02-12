@@ -635,44 +635,9 @@ def setup_commands(bot: CalendarBot):
             )
             return
 
-        # 削除前に影響する予定を取得
-        affected = bot.db_manager.get_events_by_color_name(guild_id, 名前)
-        affected = [e for e in affected if (e.get('calendar_owner') or e.get('created_by', '')) == user_id]
-
         bot.db_manager.delete_color_preset(guild_id, user_id, 名前)
         await _update_legend_event_for_user(bot, guild_id, user_id)
-
-        # 影響する予定の色を自動再割当
-        reassign_count = 0
-        clear_count = 0
-        for event in affected:
-            recurrence = event.get('recurrence')
-            nth_weeks_raw = event.get('nth_weeks')
-            nth_weeks = json.loads(nth_weeks_raw) if nth_weeks_raw else None
-            auto_color = _auto_assign_color(bot.db_manager, guild_id, user_id, recurrence, nth_weeks)
-            if auto_color:
-                bot.db_manager.update_event(event['id'], {'color_name': auto_color['name']})
-                # Google Calendar 色も更新
-                if event.get('google_calendar_events'):
-                    cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), user_id)
-                    if cal_mgr:
-                        google_cal_data = json.loads(event['google_calendar_events'])
-                        ids = [ge['event_id'] for ge in google_cal_data]
-                        try:
-                            cal_mgr.update_events(ids, {'colorId': auto_color['color_id']})
-                        except Exception:
-                            pass
-                reassign_count += 1
-            else:
-                bot.db_manager.update_event(event['id'], {'color_name': None})
-                clear_count += 1
-
-        msg = f"✅ 色プリセット「{名前}」を削除しました。"
-        if reassign_count:
-            msg += f"\n🔄 {reassign_count} 件の予定に代替色を自動割当しました。"
-        if clear_count:
-            msg += f"\n⚠️ {clear_count} 件の予定の色設定をクリアしました（代替プリセットなし）。"
-        await interaction.followup.send(msg, ephemeral=True)
+        await interaction.followup.send(f"✅ 色プリセット「{名前}」を削除しました。", ephemeral=True)
 
     bot.tree.add_command(color_group)
 
@@ -2769,26 +2734,34 @@ def create_tag_group_list_embed(groups: List[Dict[str, Any]], tags: List[Dict[st
     return embed
 
 def _upsert_legend_event(cal_mgr, db_manager, legend_key: str, legend_event_id: str, summary: str, description: str):
-    """凡例イベントの作成/更新共通処理"""
+    """凡例イベントの作成/更新共通処理。既存イベントが見つからない場合は新規作成する。"""
     legend_start = "2026-01-01"
     legend_end = "2030-12-31"
-    try:
-        event_body = {
-            "summary": summary,
-            "description": description,
-            "colorId": LEGEND_COLOR_ID,
-            "start": {"date": legend_start},
-            "end": {"date": legend_end},
-        }
-        if legend_event_id:
+    event_body = {
+        "summary": summary,
+        "description": description,
+        "colorId": LEGEND_COLOR_ID,
+        "start": {"date": legend_start},
+        "end": {"date": legend_end},
+    }
+
+    # 既存イベントの更新を試行
+    if legend_event_id:
+        try:
             cal_mgr.update_event(legend_event_id, event_body)
-        else:
-            event = cal_mgr.service.events().insert(
-                calendarId=cal_mgr.calendar_id, body=event_body
-            ).execute()
-            db_manager.update_setting(legend_key, event['id'])
+            return
+        except Exception as e:
+            # イベントが削除済み等で更新失敗 → 新規作成にフォールバック
+            print(f"Legend event update failed, will recreate ({legend_key}): {e}")
+
+    # 新規作成
+    try:
+        event = cal_mgr.service.events().insert(
+            calendarId=cal_mgr.calendar_id, body=event_body
+        ).execute()
+        db_manager.update_setting(legend_key, event['id'])
     except Exception as e:
-        print(f"Legend event upsert failed ({legend_key}): {e}")
+        print(f"Legend event create failed ({legend_key}): {e}")
 
 
 async def _update_color_legend_for_user(bot: CalendarBot, guild_id: str, user_id: str):
