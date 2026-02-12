@@ -218,6 +218,21 @@ class FirestoreManager:
         events = self._get_active_events(guild_id)
         return sorted(events, key=lambda x: x.get("created_at", ""), reverse=True)
 
+    def get_events_by_color_name(self, guild_id: str, color_name: str) -> List[dict]:
+        """指定色名を使用中のアクティブ予定を取得"""
+        events = self._get_active_events(guild_id)
+        return [e for e in events if e.get("color_name") == color_name]
+
+    def get_events_by_tag(self, guild_id: str, tag_name: str) -> List[dict]:
+        """指定タグを含むアクティブ予定を取得"""
+        events = self._get_active_events(guild_id)
+        result = []
+        for e in events:
+            tags = json.loads(e.get("tags") or "[]")
+            if tag_name in tags:
+                result.append(e)
+        return result
+
     # ---- 設定 ----
 
     def update_setting(self, key: str, value: str):
