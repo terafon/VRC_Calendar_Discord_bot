@@ -1,7 +1,6 @@
 from google.oauth2.credentials import Credentials as OAuthCredentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Callable
 
@@ -234,16 +233,14 @@ class GoogleCalendarManager:
         return None
 
     def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
-        """単一イベントを取得。削除済みの場合はNoneを返す。"""
+        """単一イベントを取得。存在しない場合はNoneを返す。"""
         try:
             return self.service.events().get(
                 calendarId=self.calendar_id,
                 eventId=event_id
             ).execute()
-        except HttpError as e:
-            if e.resp.status in (404, 410):
-                return None
-            raise
+        except Exception:
+            return None
 
     def get_color_palette(self) -> Dict[str, Any]:
         """Googleカレンダーの色パレットを取得"""
