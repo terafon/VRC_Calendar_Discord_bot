@@ -299,12 +299,10 @@ class CalendarBot(commands.Bot):
             gcal_event = cal_mgr.get_event(google_event_id)
 
             if gcal_event is None:
-                # イベントが削除されている → 再作成
-                print(f"[sync] Event {event['id']} ({event['event_name']}) deleted from Google Calendar, recreating...")
-                new_event_id = _recreate_calendar_event(self, guild_id, event, cal_mgr, cal_owner)
-                if new_event_id:
-                    print(f"[sync] Recreated event {event['id']} as {new_event_id}")
-                return  # 再作成したので残りのgoogle_event_idのチェックは不要
+                # Google Calendarから削除された → Firestoreも論理削除
+                print(f"[sync] Event {event['id']} ({event['event_name']}) deleted from Google Calendar, deactivating in Firestore...")
+                self.db_manager.delete_event(event['id'])
+                return
 
             # イベントが存在する → summary/description/colorId を比較
             expected = _rebuild_expected_event(self, guild_id, event, cal_owner)
@@ -1846,12 +1844,6 @@ class ColorSetupView(discord.ui.View):
 
     async def _finalize(self, interaction: discord.Interaction):
         """選択完了後、色プリセットを一括登録（カレンダー単位）"""
-        # 既存プリセットのcolorIdを保存（変更検出用）
-        old_presets = {
-            p['name']: p['color_id']
-            for p in self.bot.db_manager.list_color_presets(self.guild_id, self.target_user_id)
-        }
-
         presets_data = []
         for key, data in self.selections.items():
             presets_data.append({
@@ -1879,20 +1871,18 @@ class ColorSetupView(discord.ui.View):
         # 対象カレンダーの凡例イベントを更新
         await _update_legend_event_for_user(self.bot, self.guild_id, self.target_user_id)
 
-        # colorIdが変更された色プリセットの既存イベントを更新
+        # 色プリセットに基づいて既存イベントのGoogle Calendar色を同期
         color_update_count = 0
         for key, data in self.selections.items():
             color_name = data["name"]
             new_color_id = data["color_id"]
-            old_color_id = old_presets.get(color_name)
-            if old_color_id and old_color_id != new_color_id:
-                affected = self.bot.db_manager.get_events_by_color_name(self.guild_id, color_name)
-                affected = [e for e in affected if (e.get('calendar_owner') or e.get('created_by', '')) == self.target_user_id]
-                if affected:
-                    cnt = await _batch_update_google_calendar_events(
-                        self.bot, self.guild_id, affected, {'colorId': new_color_id}
-                    )
-                    color_update_count += cnt
+            affected = self.bot.db_manager.get_events_by_color_name(self.guild_id, color_name)
+            affected = [e for e in affected if (e.get('calendar_owner') or e.get('created_by', '')) == self.target_user_id]
+            if affected:
+                cnt = await _batch_update_google_calendar_events(
+                    self.bot, self.guild_id, affected, {'colorId': new_color_id}
+                )
+                color_update_count += cnt
 
         # 既存予定で色未割当のものに自動割当
         all_events = self.bot.db_manager.get_all_active_events(self.guild_id)
@@ -3145,71 +3135,3 @@ def _rebuild_expected_event(
             result['colorId'] = preset['color_id']
 
     return result
-
-
-def _recreate_calendar_event(
-    bot: CalendarBot, guild_id: str, event: Dict[str, Any],
-    cal_mgr: 'GoogleCalendarManager', cal_owner: str
-) -> Optional[str]:
-    """削除されたイベントをGoogle Calendarに再作成し、新しいイベントIDをFirestoreに保存する"""
-    recurrence = event.get('recurrence', '')
-    if recurrence == 'irregular':
-        # 不定期イベントは Google Calendar イベントなしのためスキップ
-        return None
-
-    weekday = event.get('weekday')
-    time_str = event.get('time')
-    if weekday is None or not time_str:
-        return None
-
-    nth_weeks = json.loads(event['nth_weeks']) if event.get('nth_weeks') else []
-
-    expected = _rebuild_expected_event(bot, guild_id, event, cal_owner)
-
-    color_name = event.get('color_name')
-    color_id = None
-    if color_name and cal_owner:
-        preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
-        if preset:
-            color_id = preset['color_id']
-
-    tags = json.loads(event.get('tags') or '[]')
-
-    try:
-        rrule = RecurrenceCalculator.to_rrule(
-            recurrence=recurrence,
-            nth_weeks=nth_weeks,
-            weekday=weekday,
-        )
-        start_dt = _next_weekday_datetime(
-            weekday, time_str,
-            recurrence=recurrence, nth_weeks=nth_weeks,
-        )
-        duration_minutes = event.get('duration_minutes', 60)
-        end_dt = start_dt + timedelta(minutes=duration_minutes)
-
-        google_event_id = cal_mgr.create_recurring_event(
-            summary=expected['summary'],
-            start_datetime=start_dt,
-            end_datetime=end_dt,
-            rrule=rrule,
-            description=expected['description'],
-            color_id=color_id,
-            extended_props={
-                "tags": json.dumps(tags, ensure_ascii=False),
-                "color_name": color_name or "",
-                "x_url": event.get('x_url') or "",
-                "vrc_group_url": event.get('vrc_group_url') or "",
-                "official_url": event.get('official_url') or "",
-            },
-        )
-
-        bot.db_manager.update_google_calendar_events(
-            event['id'],
-            [{"event_id": google_event_id, "rrule": rrule}]
-        )
-
-        return google_event_id
-    except Exception as e:
-        print(f"[sync] Failed to recreate event {event.get('id')}: {e}")
-        return None
