@@ -585,6 +585,31 @@ def setup_commands(bot: CalendarBot):
 
         await interaction.followup.send(embed=embed)
 
+    @bot.tree.command(name="予定削除", description="登録済みの予定をセレクトメニューから選択して削除します")
+    async def delete_schedule_command(interaction: discord.Interaction):
+        """セレクトメニューから予定を選んで削除"""
+        await interaction.response.defer(ephemeral=True)
+
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        events = bot.db_manager.get_all_active_events(guild_id)
+
+        if not events:
+            await interaction.followup.send("📭 登録されている予定がありません。", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🗑️ 予定削除",
+            description=f"削除する予定を選択してください（全{len(events)}件）",
+            color=discord.Color.red(),
+        )
+        view = EventDeleteView(
+            author_id=interaction.user.id,
+            events=events,
+            bot_instance=bot,
+            guild_id=guild_id,
+        )
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
     @bot.tree.command(name="ヘルプ", description="Botの使い方とコマンド説明を表示します")
     async def help_command(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -2631,6 +2656,201 @@ async def handle_search_event(bot: CalendarBot, interaction: discord.Interaction
 
     return None
 
+class EventDeleteView(discord.ui.View):
+    """予定削除用セレクトメニュー（ページネーション対応）"""
+
+    ITEMS_PER_PAGE = 25
+
+    def __init__(self, author_id: int, events: List[Dict[str, Any]], bot_instance: CalendarBot, guild_id: str):
+        super().__init__(timeout=180)
+        self.author_id = author_id
+        self.events = events
+        self.bot_instance = bot_instance
+        self.guild_id = guild_id
+        self.page = 0
+        self.total_pages = max(1, (len(events) + self.ITEMS_PER_PAGE - 1) // self.ITEMS_PER_PAGE)
+        self.selected_event_ids: List[int] = []
+        self._build_ui()
+
+    def _build_ui(self):
+        self.clear_items()
+
+        start = self.page * self.ITEMS_PER_PAGE
+        end = start + self.ITEMS_PER_PAGE
+        page_events = self.events[start:end]
+
+        weekdays = ['月', '火', '水', '木', '金', '土', '日']
+
+        options = []
+        for ev in page_events:
+            recurrence_str = RECURRENCE_TYPES.get(ev.get('recurrence', ''), ev.get('recurrence', ''))
+            if ev.get('recurrence') == 'nth_week':
+                nth_weeks = json.loads(ev['nth_weeks']) if isinstance(ev.get('nth_weeks'), str) else ev.get('nth_weeks')
+                if nth_weeks:
+                    nth_str = '・'.join([f"第{n}" for n in nth_weeks])
+                    recurrence_str = f"{nth_str}週"
+
+            wd = ev.get('weekday')
+            weekday_str = weekdays[wd] + '曜' if isinstance(wd, int) and 0 <= wd <= 6 else ''
+            time_str = ev.get('time') or '時刻未定'
+            desc = f"{recurrence_str} {weekday_str} {time_str}".strip()
+
+            event_id = ev.get('id')
+            options.append(
+                discord.SelectOption(
+                    label=ev.get('event_name', '(名前なし)')[:100],
+                    value=str(event_id),
+                    description=desc[:100],
+                    default=event_id in self.selected_event_ids,
+                )
+            )
+
+        select = discord.ui.Select(
+            placeholder="削除する予定を選択してください",
+            min_values=0,
+            max_values=len(options),
+            options=options,
+            custom_id="event_delete_select",
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+        if self.total_pages > 1:
+            prev_btn = discord.ui.Button(label="◀ 前へ", style=discord.ButtonStyle.secondary, disabled=(self.page == 0))
+            prev_btn.callback = self._on_prev
+            self.add_item(prev_btn)
+
+            page_label = discord.ui.Button(label=f"{self.page + 1}/{self.total_pages}", style=discord.ButtonStyle.secondary, disabled=True)
+            self.add_item(page_label)
+
+            next_btn = discord.ui.Button(label="次へ ▶", style=discord.ButtonStyle.secondary, disabled=(self.page >= self.total_pages - 1))
+            next_btn.callback = self._on_next
+            self.add_item(next_btn)
+
+        selected_count = len(self.selected_event_ids)
+        delete_btn = discord.ui.Button(
+            label=f"選択した予定を削除（{selected_count}件）" if selected_count > 0 else "選択した予定を削除",
+            style=discord.ButtonStyle.danger,
+            disabled=(selected_count == 0),
+        )
+        delete_btn.callback = self._on_delete
+        self.add_item(delete_btn)
+
+        cancel_btn = discord.ui.Button(label="キャンセル", style=discord.ButtonStyle.secondary)
+        cancel_btn.callback = self._on_cancel
+        self.add_item(cancel_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id
+
+    async def _on_select(self, interaction: discord.Interaction):
+        start = self.page * self.ITEMS_PER_PAGE
+        end = start + self.ITEMS_PER_PAGE
+        page_event_ids = [ev.get('id') for ev in self.events[start:end]]
+
+        selected_on_page = [int(v) for v in interaction.data.get('values', [])]
+
+        self.selected_event_ids = [eid for eid in self.selected_event_ids if eid not in page_event_ids]
+        self.selected_event_ids.extend(selected_on_page)
+
+        self._build_ui()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_prev(self, interaction: discord.Interaction):
+        self.page = max(0, self.page - 1)
+        self._build_ui()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_next(self, interaction: discord.Interaction):
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self._build_ui()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_delete(self, interaction: discord.Interaction):
+        selected_events = [ev for ev in self.events if ev.get('id') in self.selected_event_ids]
+        if not selected_events:
+            await interaction.response.send_message("❌ 予定が選択されていません。", ephemeral=True)
+            return
+
+        confirm_view = EventDeleteConfirmView(
+            author_id=self.author_id,
+            events=selected_events,
+            bot_instance=self.bot_instance,
+            guild_id=self.guild_id,
+        )
+        names = "\n".join([f"・{ev.get('event_name', '(名前なし)')}" for ev in selected_events])
+        embed = discord.Embed(
+            title="⚠️ 削除確認",
+            description=f"以下の **{len(selected_events)}件** の予定を削除しますか？\n\n{names}",
+            color=discord.Color.orange(),
+        )
+        self.stop()
+        await interaction.response.edit_message(embed=embed, view=confirm_view)
+
+    async def _on_cancel(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.edit_message(content="操作をキャンセルしました。", embed=None, view=None)
+
+
+class EventDeleteConfirmView(discord.ui.View):
+    """予定削除の最終確認ビュー"""
+
+    def __init__(self, author_id: int, events: List[Dict[str, Any]], bot_instance: CalendarBot, guild_id: str):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.events = events
+        self.bot_instance = bot_instance
+        self.guild_id = guild_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id
+
+    @discord.ui.button(label="削除する", style=discord.ButtonStyle.danger)
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        deleted = []
+        warnings = []
+
+        for event in self.events:
+            event_name = event.get('event_name', '(名前なし)')
+            google_cal_events = event.get('google_calendar_events')
+
+            if google_cal_events:
+                cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+                cal_mgr = self.bot_instance.get_calendar_manager_for_user(int(self.guild_id), cal_owner) if cal_owner else None
+                if cal_mgr:
+                    try:
+                        google_event_ids = [ge['event_id'] for ge in json.loads(google_cal_events)]
+                        cal_mgr.delete_events(google_event_ids)
+                    except Exception as e:
+                        warnings.append(f"⚠️ 「{event_name}」のGoogleカレンダー削除に失敗: {e}")
+                else:
+                    warnings.append(f"⚠️ 「{event_name}」のカレンダー認証が無効のため、Googleカレンダーからは削除できませんでした")
+
+            self.bot_instance.db_manager.delete_event(event.get('id'))
+            deleted.append(event_name)
+
+        result_lines = [f"✅ **{len(deleted)}件** の予定を削除しました。"]
+        if deleted:
+            result_lines.append("\n".join([f"・{name}" for name in deleted]))
+        if warnings:
+            result_lines.append("\n" + "\n".join(warnings))
+
+        self.stop()
+        await interaction.followup.send("\n".join(result_lines), ephemeral=True)
+
+        try:
+            await _update_legend_event_by_guild(self.bot_instance, self.guild_id)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content="操作をキャンセルしました。", embed=None, view=None)
+
+
 class ConfirmView(discord.ui.View):
     def __init__(self, author_id: int):
         super().__init__(timeout=120)
@@ -2903,8 +3123,8 @@ def create_help_embed() -> discord.Embed:
         inline=False
     )
     embed.add_field(
-        name="/今週の予定 /予定一覧",
-        value="今週の予定や繰り返し予定の一覧を表示します。",
+        name="/今週の予定 /予定一覧 /予定削除",
+        value="今週の予定や繰り返し予定の一覧表示、セレクトメニューから予定を選択して削除します。",
         inline=False
     )
     embed.add_field(
