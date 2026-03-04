@@ -129,7 +129,36 @@ class CalendarBot(commands.Bot):
         tags = self.db_manager.list_tags(guild_id)
         color_presets_by_calendar = self.db_manager.list_all_color_presets_by_calendar(guild_id)
         active_events = self.db_manager.get_all_active_events(guild_id)
-        event_names = [e['event_name'] for e in active_events]
+        events = []
+        for e in active_events:
+            event_tags = e.get('tags')
+            if isinstance(event_tags, str):
+                try:
+                    event_tags = json.loads(event_tags)
+                except (json.JSONDecodeError, TypeError):
+                    event_tags = []
+            event_info = {
+                "event_name": e.get('event_name'),
+                "recurrence": e.get('recurrence'),
+                "weekday": e.get('weekday'),
+                "time": e.get('time'),
+                "duration_minutes": e.get('duration_minutes'),
+                "tags": event_tags or [],
+                "description": e.get('description', ''),
+                "color_name": e.get('color_name', ''),
+                "x_url": e.get('x_url', ''),
+                "vrc_group_url": e.get('vrc_group_url', ''),
+                "official_url": e.get('official_url', ''),
+            }
+            nth_weeks = e.get('nth_weeks')
+            if nth_weeks:
+                if isinstance(nth_weeks, str):
+                    try:
+                        nth_weeks = json.loads(nth_weeks)
+                    except (json.JSONDecodeError, TypeError):
+                        nth_weeks = None
+                event_info["nth_weeks"] = nth_weeks
+            events.append(event_info)
 
         all_tokens = self.db_manager.get_all_oauth_tokens(guild_id)
         calendars = [{
@@ -142,7 +171,7 @@ class CalendarBot(commands.Bot):
             "tag_groups": tag_groups,
             "tags": tags,
             "color_presets_by_calendar": color_presets_by_calendar,
-            "event_names": event_names,
+            "events": events,
             "calendars": calendars,
         }
 
@@ -1673,9 +1702,10 @@ async def _confirm_and_handle_in_thread(
         if not events:
             return (f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。", True)
         event = events[0]
+        edit_summary = build_edit_summary(parsed, event)
         summary = (
             f"対象: {event['event_name']} (ID {event['id']})\n"
-            f"{build_event_summary(parsed)}"
+            f"{edit_summary}"
         )
         title = "予定編集の確認"
     elif action == "delete":
@@ -2911,6 +2941,81 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
         f"説明: {parsed.get('description', '')}"
     )
 
+def build_edit_summary(parsed: Dict[str, Any], existing_event: Dict[str, Any]) -> str:
+    """編集時の変更前後を表示するサマリーを構築する"""
+    weekdays = ['月', '火', '水', '木', '金', '土', '日']
+
+    def fmt_weekday(val):
+        if isinstance(val, int) and 0 <= val <= 6:
+            return weekdays[val]
+        return str(val) if val is not None else "未設定"
+
+    def fmt_tags(val):
+        if isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                val = []
+        if not val:
+            return "なし"
+        return ", ".join(val)
+
+    def fmt_nth_weeks(val):
+        if isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                return ""
+        if val:
+            return f"第{','.join(str(n) for n in val)}週"
+        return ""
+
+    def fmt_recurrence(val, nth_val=None):
+        label = RECURRENCE_TYPES.get(val, val) if val else "未設定"
+        nth_str = fmt_nth_weeks(nth_val)
+        if nth_str:
+            return f"{label} {nth_str}"
+        return label
+
+    # 変更対象フィールドのマッピング（parsedのキー → 表示名, フォーマッタ）
+    field_defs = {
+        "recurrence": ("繰り返し", None),  # 特殊処理
+        "weekday": ("曜日", fmt_weekday),
+        "time": ("時刻", None),
+        "duration_minutes": ("所要時間", lambda v: f"{v}分"),
+        "tags": ("タグ", fmt_tags),
+        "description": ("説明", lambda v: v or "なし"),
+        "color_name": ("色", lambda v: v or "未設定"),
+        "x_url": ("X URL", lambda v: v or "なし"),
+        "vrc_group_url": ("VRCグループURL", lambda v: v or "なし"),
+        "official_url": ("公式サイトURL", lambda v: v or "なし"),
+    }
+
+    lines = []
+    for key, (label, formatter) in field_defs.items():
+        if key not in parsed:
+            continue
+        new_val = parsed[key]
+        old_val = existing_event.get(key)
+
+        if key == "recurrence":
+            old_nth = existing_event.get("nth_weeks")
+            new_nth = parsed.get("nth_weeks", old_nth)
+            old_display = fmt_recurrence(old_val, old_nth)
+            new_display = fmt_recurrence(new_val, new_nth)
+        elif formatter:
+            old_display = formatter(old_val)
+            new_display = formatter(new_val)
+        else:
+            old_display = old_val if old_val is not None else "未設定"
+            new_display = new_val if new_val is not None else "未設定"
+
+        lines.append(f"{label}: {old_display} → {new_display}")
+
+    if not lines:
+        return "変更内容なし"
+    return "\n".join(lines)
+
 async def confirm_and_handle_add_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> Optional[str]:
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
 
@@ -2964,9 +3069,10 @@ async def confirm_and_handle_edit_event(bot: CalendarBot, interaction: discord.I
         note = "同名が複数あるため、先頭の予定を対象にします。"
     else:
         note = ""
+    edit_summary = build_edit_summary(parsed, event)
     summary = (
         f"対象: {event['event_name']} (ID {event['id']})\n"
-        f"{build_event_summary(parsed)}\n"
+        f"{edit_summary}\n"
         f"{note}"
     )
     ok = await confirm_action(interaction, "予定編集の確認", summary)
