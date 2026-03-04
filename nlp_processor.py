@@ -239,6 +239,8 @@ def _build_server_context(server_context: Optional[Dict[str, Any]] = None) -> st
 
     tag_groups = server_context.get("tag_groups", [])
     tags = server_context.get("tags", [])
+    # タグ名→グループ名マッピング（予定詳細のタグ表示で使用）
+    tag_to_group: Dict[str, str] = {}
     if tag_groups or tags:
         lines.append("# このサーバーで利用可能なタグ（各タググループから複数選択可能）")
         tags_by_group: Dict[int, list] = {}
@@ -247,6 +249,8 @@ def _build_server_context(server_context: Optional[Dict[str, Any]] = None) -> st
         for group in tag_groups:
             group_tags = tags_by_group.get(group["id"], [])
             tag_names = [t["name"] for t in group_tags]
+            for t_name in tag_names:
+                tag_to_group[t_name] = group["name"]
             desc = f" - {group['description']}" if group.get('description') else ""
             if tag_names:
                 lines.append(f"【タググループ: {group['name']}{desc}】選択肢: {' / '.join(tag_names)}")
@@ -293,7 +297,17 @@ def _build_server_context(server_context: Optional[Dict[str, Any]] = None) -> st
             nth = ev.get("nth_weeks")
             nth_str = f" 第{','.join(str(n) for n in nth)}週" if nth else ""
             tags = ev.get("tags", [])
-            tags_str = ", ".join(tags) if tags else ""
+            if tags and tag_to_group:
+                tags_with_group = []
+                for t in tags:
+                    group_name = tag_to_group.get(t)
+                    if group_name:
+                        tags_with_group.append(f"{group_name}:{t}")
+                    else:
+                        tags_with_group.append(t)
+                tags_str = ", ".join(tags_with_group)
+            else:
+                tags_str = ", ".join(tags) if tags else ""
             desc = ev.get("description", "")
             color = ev.get("color_name", "")
             x_url = ev.get("x_url", "")
