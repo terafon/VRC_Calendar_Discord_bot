@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict
 
 from google.cloud import firestore
@@ -70,7 +70,7 @@ class FirestoreManager:
     ) -> int:
         """予定を追加"""
         event_id = self._next_id("events")
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         data = {
             "id": event_id,
@@ -107,7 +107,7 @@ class FirestoreManager:
         if ref:
             ref.update({
                 "google_calendar_events": json.dumps(google_events, ensure_ascii=False),
-                "updated_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             })
 
     def get_this_week_events(self, guild_id: Optional[str] = None) -> List[dict]:
@@ -137,7 +137,7 @@ class FirestoreManager:
 
         result = []
         for event in events:
-            if event["recurrence"] == "irregular":
+            if event.get("recurrence", "") == "irregular":
                 # 不定期予定は個別サブコレクションから取得
                 irr_ref = (
                     self._guild_ref(event["guild_id"])
@@ -161,8 +161,8 @@ class FirestoreManager:
                 monthly_dates = json.loads(monthly_dates_raw) if monthly_dates_raw else None
                 dates = RecurrenceCalculator.calculate_dates(
                     recurrence=event["recurrence"],
-                    nth_weeks=json.loads(event["nth_weeks"]) if event["nth_weeks"] else None,
-                    weekday=event["weekday"],
+                    nth_weeks=json.loads(event.get("nth_weeks")) if event.get("nth_weeks") else None,
+                    weekday=event.get("weekday"),
                     start_date=start_date,
                     months_ahead=0,
                     end_date_limit=end_date,
@@ -206,7 +206,7 @@ class FirestoreManager:
                 fs_updates[key] = json.dumps(value, ensure_ascii=False)
             else:
                 fs_updates[key] = value
-        fs_updates["updated_at"] = datetime.utcnow().isoformat()
+        fs_updates["updated_at"] = datetime.now(timezone.utc).isoformat()
         ref.update(fs_updates)
 
     def delete_event(self, event_id: int):
@@ -215,7 +215,7 @@ class FirestoreManager:
         if ref:
             ref.update({
                 "is_active": False,
-                "updated_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             })
 
     def get_all_active_events(self, guild_id: Optional[str] = None) -> List[dict]:
@@ -244,7 +244,7 @@ class FirestoreManager:
         """設定情報を更新"""
         self.db.collection("settings").document(key).set({
             "value": value,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 
     def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
@@ -344,9 +344,9 @@ class FirestoreManager:
 
     def mark_color_setup_done(self, guild_id: str, user_id: str):
         """色セットアップ完了フラグを設定（カレンダー単位）"""
-        self._guild_ref(guild_id).collection("oauth_tokens").document(user_id).update({
+        self._guild_ref(guild_id).collection("oauth_tokens").document(user_id).set({
             "color_setup_done": True,
-        })
+        }, merge=True)
 
     def delete_color_preset(self, guild_id: str, user_id: str, name: str):
         """色プリセットを削除（カレンダー単位）"""
@@ -682,7 +682,7 @@ class FirestoreManager:
         self.db.collection("oauth_states").document(state).set({
             "guild_id": guild_id,
             "user_id": user_id,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         })
 
     def get_and_delete_oauth_state(self, state: str) -> Optional[dict]:
@@ -693,6 +693,19 @@ class FirestoreManager:
             return None
         data = doc.to_dict()
         ref.delete()
+
+        # 有効期限チェック（30分）
+        created_at = data.get("created_at")
+        if created_at:
+            try:
+                created_time = datetime.fromisoformat(created_at)
+                if created_time.tzinfo is None:
+                    created_time = created_time.replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - created_time).total_seconds() > 1800:
+                    return None
+            except (ValueError, TypeError):
+                pass
+
         return data
 
     # ---- 通知設定 ----
@@ -727,7 +740,7 @@ class FirestoreManager:
             "channel_id": channel_id,
             "calendar_owners": calendar_owners,
             "configured_by": configured_by,
-            "configured_at": datetime.utcnow().isoformat(),
+            "configured_at": datetime.now(timezone.utc).isoformat(),
         }
         (
             self._guild_ref(guild_id)
@@ -749,12 +762,12 @@ class FirestoreManager:
 
     def update_notification_last_sent(self, guild_id: str, sent_at: str):
         """最終通知送信日時を更新"""
-        (
+        ref = (
             self._guild_ref(guild_id)
             .collection("notification_settings")
             .document("config")
-            .update({"last_sent_at": sent_at})
         )
+        ref.set({"last_sent_at": sent_at}, merge=True)
 
     def get_all_notification_settings(self) -> List[Dict]:
         """全サーバーの通知設定を取得（collection_groupクエリ）"""

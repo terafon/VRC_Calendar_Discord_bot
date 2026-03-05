@@ -20,7 +20,6 @@
 """
 
 import argparse
-import json
 import os
 import sys
 
@@ -57,8 +56,9 @@ def show_overview(db):
         data = guild_doc.to_dict() or {}
         print(f"  🏠 {guild_id}")
 
-        subcollections = ["events", "tag_groups", "tags", "oauth_tokens",
-                          "irregular_events", "notification_settings"]
+        subcollections = ["events", "irregular_events", "color_presets", "tag_groups",
+                          "tags", "calendar_accounts", "guild_settings",
+                          "oauth_tokens", "notification_settings"]
         for sub in subcollections:
             docs = list(db.collection("guilds").document(guild_id).collection(sub).get())
             if docs:

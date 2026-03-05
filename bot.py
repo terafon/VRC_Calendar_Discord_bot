@@ -14,6 +14,16 @@ from recurrence_calculator import RecurrenceCalculator
 from oauth_handler import OAuthHandler
 from conversation_manager import ConversationManager
 
+def _parse_json_field(value):
+    """JSON文字列をパースする。既にパース済みの場合はそのまま返す。"""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return value if value is not None else []
+
+
 RECURRENCE_TYPES = {
     "weekly": "毎週",
     "biweekly": "隔週",
@@ -325,7 +335,11 @@ class CalendarBot(commands.Bot):
             # 不定期イベント等、Google Calendarイベントなし → スキップ
             return
 
-        google_cal_data = json.loads(google_cal_events_json)
+        try:
+            google_cal_data = json.loads(google_cal_events_json)
+        except (json.JSONDecodeError, TypeError):
+            print(f"[sync] Invalid google_calendar_events JSON for event {event.get('id')}: {google_cal_events_json}")
+            return
         if not google_cal_data:
             return
 
@@ -432,6 +446,9 @@ def setup_commands(bot: CalendarBot):
 
         try:
             guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+            if not interaction.guild_id:
+                await interaction.followup.send("⚠️ このコマンドはサーバー内で使用してください。", ephemeral=True)
+                return
 
             server_context = bot._get_server_context(guild_id)
 
@@ -517,8 +534,9 @@ def setup_commands(bot: CalendarBot):
                     ephemeral=True
                 )
             else:
+                print(f"[schedule_command] Unexpected error: {error_msg}")
                 await interaction.followup.send(
-                    f"エラーが発生しました: {error_msg}",
+                    "⚠️ 予期しないエラーが発生しました。しばらくしてから再度お試しください。",
                     ephemeral=True
                 )
 
@@ -583,7 +601,8 @@ def setup_commands(bot: CalendarBot):
                 try:
                     response, should_end_session = await _dispatch_action_in_thread(bot, thread, message.author, parsed, session.guild_id)
                 except Exception as e:
-                    await thread.send(f"❌ エラーが発生しました: {e}")
+                    print(f"[on_message] Action dispatch error: {e}")
+                    await thread.send("⚠️ 予期しないエラーが発生しました。しばらくしてから再度お試しください。")
                     response = None
                     should_end_session = True
 
@@ -609,7 +628,8 @@ def setup_commands(bot: CalendarBot):
             if "429" in error_msg or "Resource exhausted" in error_msg.lower():
                 await thread.send("⚠️ APIの利用制限に達しました。1分ほど待ってから再度お試しください。")
             else:
-                await thread.send(f"エラーが発生しました: {error_msg}\nもう一度入力してください。")
+                print(f"[on_message] Unexpected error: {error_msg}")
+                await thread.send("⚠️ 予期しないエラーが発生しました。しばらくしてから再度お試しください。\nもう一度入力してください。")
 
     @bot.tree.command(name="今週の予定", description="今週の予定一覧を表示します")
     async def this_week_command(interaction: discord.Interaction):
@@ -2682,12 +2702,13 @@ async def _handle_delete_event_direct(
 
     event = events[0]
 
-    if event['google_calendar_events']:
+    google_cal_events = event.get('google_calendar_events')
+    if google_cal_events:
         cal_owner = event.get('calendar_owner') or event.get('created_by', '')
         cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
         if not cal_mgr:
             return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
-        google_event_ids = [ge['event_id'] for ge in json.loads(event['google_calendar_events'])]
+        google_event_ids = [ge['event_id'] for ge in json.loads(google_cal_events)]
         cal_mgr.delete_events(google_event_ids)
 
     bot.db_manager.delete_event(event['id'])

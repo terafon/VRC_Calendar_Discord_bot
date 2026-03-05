@@ -51,6 +51,7 @@ class ConversationManager:
         server_context: Optional[Dict[str, Any]] = None,
         timeout: int = 300,
     ) -> ConversationSession:
+        self.cleanup_expired()  # 期限切れセッションをクリーンアップ
         session = ConversationSession(
             guild_id=guild_id,
             channel_id=channel_id,
@@ -87,4 +88,4 @@ class ConversationManager:
 
     @property
     def active_count(self) -> int:
-        return len(self._sessions)
+        return sum(1 for s in self._sessions.values() if not s.is_expired())

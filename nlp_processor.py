@@ -309,10 +309,10 @@ def _build_server_context(server_context: Optional[Dict[str, Any]] = None) -> st
             nth_str = f" 第{','.join(str(n) for n in nth)}週" if nth else ""
             md = ev.get("monthly_dates")
             md_str = f" 毎月{','.join(str(d) for d in md)}日" if md else ""
-            tags = ev.get("tags", [])
-            if tags and tag_to_group:
+            event_tags = ev.get("tags", [])
+            if event_tags and tag_to_group:
                 tags_with_group = []
-                for t in tags:
+                for t in event_tags:
                     group_name = tag_to_group.get(t)
                     if group_name:
                         tags_with_group.append(f"{group_name}:{t}")
@@ -320,7 +320,7 @@ def _build_server_context(server_context: Optional[Dict[str, Any]] = None) -> st
                         tags_with_group.append(t)
                 tags_str = ", ".join(tags_with_group)
             else:
-                tags_str = ", ".join(tags) if tags else ""
+                tags_str = ", ".join(event_tags) if event_tags else ""
             desc = ev.get("description", "")
             color = ev.get("color_name", "")
             x_url = ev.get("x_url", "")
@@ -360,10 +360,34 @@ def _parse_json_response(text: str) -> Dict[str, Any]:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group(0))
-        raise ValueError("Gemini APIからのレスポンスをパースできませんでした。")
+        pass
+
+    # マークダウンコードブロックを先にチェック
+    md_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+    if md_match:
+        try:
+            return json.loads(md_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # バランスの取れたブレースで最も外側のJSONオブジェクトを探す
+    depth = 0
+    start_idx = None
+    for i, ch in enumerate(text):
+        if ch == '{':
+            if depth == 0:
+                start_idx = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start_idx is not None:
+                try:
+                    return json.loads(text[start_idx:i + 1])
+                except json.JSONDecodeError:
+                    start_idx = None
+                    continue
+
+    raise ValueError("Gemini APIからのレスポンスをパースできませんでした。")
 
 
 class NLPProcessor:
@@ -383,7 +407,12 @@ class NLPProcessor:
         """ユーザーメッセージをパース（後方互換）"""
         prompt = f"{SYSTEM_PROMPT}\n\n入力: {user_message}"
 
-        response = self.model.generate_content(prompt)
+        try:
+            response = self.model.generate_content(prompt)
+        except Exception as e:
+            raise ValueError(f"Gemini API呼び出しに失敗しました: {e}") from e
+        if not response.candidates:
+            raise ValueError("Gemini APIがレスポンスを生成できませんでした（コンテンツフィルタの可能性）")
         result = _parse_json_response(response.text)
 
         # バリデーション
@@ -406,7 +435,12 @@ class NLPProcessor:
 
     def send_message(self, chat_session, user_message: str) -> Dict[str, Any]:
         """チャットセッションにメッセージを送信し、構造化レスポンスを返す"""
-        response = chat_session.send_message(user_message)
+        try:
+            response = chat_session.send_message(user_message)
+        except Exception as e:
+            raise ValueError(f"Gemini API呼び出しに失敗しました: {e}") from e
+        if not response.candidates:
+            raise ValueError("Gemini APIがレスポンスを生成できませんでした（コンテンツフィルタの可能性）")
         result = _parse_json_response(response.text)
 
         # 必須フィールドの検証と強制修正

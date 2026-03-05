@@ -5,7 +5,7 @@ from flask import Flask, request
 import base64
 import json
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from bot import CalendarBot, setup_commands, create_weekly_embed
@@ -103,7 +103,7 @@ def oauth_callback():
         return _oauth_error_html("トークンの取得に失敗しました。再度お試しください。"), 500
 
     # Firestore に保存（calendar_id は primary をデフォルト、後でコマンドで変更可能）
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     db_manager.save_oauth_tokens(
         guild_id=guild_id,
         access_token=tokens['access_token'],
@@ -207,7 +207,7 @@ async def send_weekly_notifications():
                 print(f'Failed to send notification to channel {channel_id}: {e}')
 
     # 最終通知時刻を更新
-    bot.db_manager.update_setting('last_notification_at', datetime.utcnow().isoformat())
+    bot.db_manager.update_setting('last_notification_at', datetime.now(timezone.utc).isoformat())
 
 def run_discord_bot():
     """Discord Botを別スレッドで実行"""
@@ -224,6 +224,9 @@ def run_discord_bot():
                 print(f'Logged in as {bot.user}')
                 bot_ready.set()
 
+            if not discord_bot_token:
+                print("ERROR: DISCORD_BOT_TOKEN is not set. Bot cannot start.")
+                return
             await bot.start(discord_bot_token)
 
     try:

@@ -29,6 +29,8 @@ class RecurrenceCalculator:
             days = ",".join(str(d) for d in monthly_dates)
             return f"RRULE:FREQ=MONTHLY;BYMONTHDAY={days}"
 
+        if weekday is None:
+            raise ValueError("weekday is required for non-monthly_date recurrence types")
         day = RecurrenceCalculator.WEEKDAY_MAP[weekday]
         if recurrence == "weekly":
             return f"RRULE:FREQ=WEEKLY;BYDAY={day}"
@@ -71,7 +73,18 @@ class RecurrenceCalculator:
         if end_date_limit:
             end_date = end_date_limit
         else:
-            end_date = start_date + timedelta(days=30 * months_ahead)
+            # 月の長さを正確に計算
+            end_date = start_date
+            for _ in range(months_ahead):
+                # 次の月の同日（月末は調整）
+                month = end_date.month + 1
+                year = end_date.year
+                if month > 12:
+                    month = 1
+                    year += 1
+                max_day = calendar.monthrange(year, month)[1]
+                day = min(end_date.day, max_day)
+                end_date = end_date.replace(year=year, month=month, day=day)
         
         if recurrence == "weekly":
             # 毎週

@@ -1,7 +1,7 @@
 from google.oauth2.credentials import Credentials as OAuthCredentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any, Callable
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -72,7 +72,7 @@ class GoogleCalendarManager:
                     "event_id": event_id,
                     "date": date.strftime("%Y-%m-%d"),
                     "time": time_str,
-                    "created_at": datetime.utcnow().isoformat() + "Z"
+                    "created_at": datetime.now(timezone.utc).isoformat() + "Z"
                 })
             except Exception as e:
                 print(f"Failed to create event on {date}: {e}")
