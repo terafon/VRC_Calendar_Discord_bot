@@ -34,6 +34,10 @@ ENV/
 
 # Credentials
 credentials.json
+*-credentials.json
+service_account*.json
+*.key
+token.json
 
 # IDEs
 .idea/

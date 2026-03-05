@@ -6,7 +6,6 @@ SQLite -> Firestore 1回限りの移行スクリプト
 """
 
 import argparse
-import json
 import os
 import sqlite3
 from datetime import datetime

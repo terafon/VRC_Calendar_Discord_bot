@@ -27,19 +27,25 @@ from google.cloud import firestore
 def delete_collection(db, col_ref, batch_size=100, dry_run=False):
     """コレクション内の全ドキュメントを再帰的に削除"""
     deleted = 0
+
+    if dry_run:
+        # ドライランでは全件取得して表示のみ
+        docs = list(col_ref.get())
+        for doc in docs:
+            for subcol in doc.reference.collections():
+                deleted += delete_collection(db, subcol, batch_size, dry_run)
+            print(f"  [DRY-RUN] 削除対象: {doc.reference.path}")
+            deleted += 1
+        return deleted
+
     docs = col_ref.limit(batch_size).get()
     doc_list = list(docs)
 
     while doc_list:
         for doc in doc_list:
-            # サブコレクションを先に削除
             for subcol in doc.reference.collections():
                 deleted += delete_collection(db, subcol, batch_size, dry_run)
-
-            if dry_run:
-                print(f"  [DRY-RUN] 削除対象: {doc.reference.path}")
-            else:
-                doc.reference.delete()
+            doc.reference.delete()
             deleted += 1
 
         docs = col_ref.limit(batch_size).get()
@@ -53,8 +59,9 @@ def truncate_guild(db, guild_id, dry_run=False):
     print(f"\n--- ギルド {guild_id} のデータを削除 ---")
     guild_ref = db.collection("guilds").document(guild_id)
 
-    subcollections = ["events", "tag_groups", "tags", "oauth_tokens",
-                      "irregular_events", "notification_settings", "color_presets"]
+    subcollections = ["events", "irregular_events", "color_presets", "tag_groups",
+                      "tags", "calendar_accounts", "guild_settings",
+                      "oauth_tokens", "notification_settings"]
     total = 0
     for sub_name in subcollections:
         sub_ref = guild_ref.collection(sub_name)
@@ -113,14 +120,14 @@ def main():
     if args.all:
         if not args.dry_run:
             confirm = input("⚠️ 全データを削除します。よろしいですか？ (yes/no): ")
-            if confirm != "yes":
+            if confirm.strip().lower() not in ("yes", "y"):
                 print("キャンセルしました。")
                 return
         truncate_all(db, dry_run=args.dry_run)
     else:
         if not args.dry_run:
             confirm = input(f"⚠️ ギルド {args.guild_id} のデータを削除します。よろしいですか？ (yes/no): ")
-            if confirm != "yes":
+            if confirm.strip().lower() not in ("yes", "y"):
                 print("キャンセルしました。")
                 return
         truncate_guild(db, args.guild_id, dry_run=args.dry_run)

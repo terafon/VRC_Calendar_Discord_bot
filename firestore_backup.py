@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from google.cloud import firestore, storage
@@ -41,7 +41,19 @@ GUILD_SUBCOLLECTIONS = [
     "calendar_accounts",
     "guild_settings",
     "oauth_tokens",
+    "notification_settings",
 ]
+
+
+def _serialize_value(v):
+    """値をJSON化可能な形式に変換する（再帰対応）"""
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    elif isinstance(v, dict):
+        return {k: _serialize_value(val) for k, val in v.items()}
+    elif isinstance(v, list):
+        return [_serialize_value(item) for item in v]
+    return v
 
 
 def _serialize_doc(doc) -> dict:
@@ -49,13 +61,7 @@ def _serialize_doc(doc) -> dict:
     data = doc.to_dict()
     if data is None:
         return {}
-    result = {}
-    for k, v in data.items():
-        if hasattr(v, "isoformat"):
-            result[k] = v.isoformat()
-        else:
-            result[k] = v
-    return result
+    return {k: _serialize_value(v) for k, v in data.items()}
 
 
 def backup(project_id: str, bucket_name: str) -> str:
@@ -96,7 +102,7 @@ def backup(project_id: str, bucket_name: str) -> str:
     logger.info("Total export size: %.1f KB", len(json_bytes) / 1024)
 
     # --- GCS にアップロード ---
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     blob_name = f"firestore_backup/{timestamp}.json"
 
     client = storage.Client(project=project_id)
@@ -178,6 +184,10 @@ def main():
         sys.exit(1)
 
     if args.restore:
+        confirm = input(f"⚠️ {args.restore} からリストアします。既存データを上書きします。よろしいですか？ (yes/no): ")
+        if confirm.strip().lower() not in ("yes", "y"):
+            logger.info("リストアをキャンセルしました。")
+            sys.exit(0)
         logger.info("Restoring from gs://%s/%s ...", bucket_name, args.restore)
         restore(project_id, bucket_name, args.restore)
     else:
