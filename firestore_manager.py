@@ -56,16 +56,17 @@ class FirestoreManager:
         nth_weeks: Optional[List[int]],
         event_type: Optional[str],
         time: Optional[str],
-        weekday: int,
-        duration_minutes: int,
-        description: str,
-        color_name: Optional[str],
+        weekday: Optional[int] = None,
+        duration_minutes: int = 60,
+        description: str = "",
+        color_name: Optional[str] = None,
         x_url: Optional[str] = None,
         vrc_group_url: Optional[str] = None,
         official_url: Optional[str] = None,
         discord_channel_id: str = "",
         created_by: str = "",
         calendar_owner: str = "",
+        monthly_dates: Optional[List[int]] = None,
     ) -> int:
         """予定を追加"""
         event_id = self._next_id("events")
@@ -78,6 +79,7 @@ class FirestoreManager:
             "tags": json.dumps(tags, ensure_ascii=False),
             "recurrence": recurrence,
             "nth_weeks": json.dumps(nth_weeks) if nth_weeks else None,
+            "monthly_dates": json.dumps(monthly_dates) if monthly_dates else None,
             "event_type": event_type,
             "time": time,
             "weekday": weekday,
@@ -155,6 +157,8 @@ class FirestoreManager:
                             "time": irr["event_time"],
                         })
             else:
+                monthly_dates_raw = event.get("monthly_dates")
+                monthly_dates = json.loads(monthly_dates_raw) if monthly_dates_raw else None
                 dates = RecurrenceCalculator.calculate_dates(
                     recurrence=event["recurrence"],
                     nth_weeks=json.loads(event["nth_weeks"]) if event["nth_weeks"] else None,
@@ -162,6 +166,7 @@ class FirestoreManager:
                     start_date=start_date,
                     months_ahead=0,
                     end_date_limit=end_date,
+                    monthly_dates=monthly_dates,
                 )
                 for date in dates:
                     if start_date.date() <= date.date() <= end_date.date():
