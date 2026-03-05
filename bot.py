@@ -397,6 +397,16 @@ class CalendarBot(commands.Bot):
         embed = create_weekly_embed(events)
         try:
             await channel.send(content="🔔 **今週の予定通知**", embed=embed)
+
+            # 不定期イベントの案内を追加
+            all_events = self.db_manager.get_all_active_events(guild_id)
+            irregular_events = [e for e in all_events if e.get("recurrence") == "irregular"]
+            if calendar_owners:
+                irregular_events = [e for e in irregular_events if e.get("calendar_owner") in calendar_owners]
+            if irregular_events:
+                irregular_embed = create_irregular_events_embed(irregular_events)
+                await channel.send(embed=irregular_embed)
+
             # 最終送信時刻を更新
             from datetime import timezone, timedelta as td
             jst = timezone(td(hours=9))
@@ -2977,6 +2987,11 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
     weekday_val = parsed.get('weekday')
     if parsed.get('recurrence') == 'monthly_date':
         weekday_str = "—"
+    elif parsed.get('recurrence') == 'irregular':
+        if isinstance(weekday_val, int) and 0 <= weekday_val <= 6:
+            weekday_str = f"主に{weekdays[weekday_val]}曜日"
+        else:
+            weekday_str = "—"
     elif isinstance(weekday_val, int) and 0 <= weekday_val <= 6:
         weekday_str = weekdays[weekday_val]
     else:
@@ -3232,6 +3247,40 @@ def create_weekly_embed(events: List[Dict[str, Any]]) -> discord.Embed:
     embed.set_footer(text="予定の追加・管理は /予定 コマンドから")
     return embed
 
+def create_irregular_events_embed(events: list) -> discord.Embed:
+    """不定期イベント一覧の embed を作成する"""
+    WEEKDAY_LABELS = ["月", "火", "水", "木", "金", "土", "日"]
+    embed = discord.Embed(
+        title="📋 不定期イベント一覧",
+        description="以下の不定期イベントに今後の開催予定があれば、`/予定` コマンドで日程を追加してください。",
+        color=discord.Color.orange()
+    )
+    for event in events:
+        name = event.get("event_name") or event.get("name", "不明")
+        weekday = event.get("weekday")
+        weekday_str = f"（主に{WEEKDAY_LABELS[weekday]}曜）" if isinstance(weekday, int) and 0 <= weekday <= 6 else ""
+        tags_raw = event.get("tags", [])
+        if isinstance(tags_raw, str):
+            try:
+                tags_raw = json.loads(tags_raw)
+            except (json.JSONDecodeError, TypeError):
+                tags_raw = []
+        tag_str = " ".join(f"`{t}`" for t in tags_raw) if tags_raw else ""
+        time_str = event.get("time", "")
+        value_parts = []
+        if time_str:
+            value_parts.append(f"🕐 {time_str}")
+        if weekday_str:
+            value_parts.append(weekday_str)
+        if tag_str:
+            value_parts.append(tag_str)
+        embed.add_field(
+            name=name,
+            value=" / ".join(value_parts) if value_parts else "—",
+            inline=False
+        )
+    return embed
+
 def create_event_list_embed(events: List[Dict[str, Any]]) -> discord.Embed:
     embed = discord.Embed(
         title="📋 登録されている繰り返し予定",
@@ -3258,6 +3307,8 @@ def create_event_list_embed(events: List[Dict[str, Any]]) -> discord.Embed:
             if monthly_dates:
                 recurrence_str = f"毎月 {','.join(str(d) for d in monthly_dates)}日"
             day_part = ""
+        elif event['recurrence'] == 'irregular':
+            day_part = f"(主に{weekdays[event['weekday']]}曜)" if event.get('weekday') is not None else ""
         else:
             day_part = f"{weekdays[event['weekday']]}曜日" if event['weekday'] is not None else ""
 
