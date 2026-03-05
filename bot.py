@@ -18,6 +18,7 @@ RECURRENCE_TYPES = {
     "weekly": "毎週",
     "biweekly": "隔週",
     "nth_week": "第n週",
+    "monthly_date": "毎月指定日",
     "irregular": "不定期"
 }
 
@@ -158,6 +159,14 @@ class CalendarBot(commands.Bot):
                     except (json.JSONDecodeError, TypeError):
                         nth_weeks = None
                 event_info["nth_weeks"] = nth_weeks
+            monthly_dates = e.get('monthly_dates')
+            if monthly_dates:
+                if isinstance(monthly_dates, str):
+                    try:
+                        monthly_dates = json.loads(monthly_dates)
+                    except (json.JSONDecodeError, TypeError):
+                        monthly_dates = None
+                event_info["monthly_dates"] = monthly_dates
             events.append(event_info)
 
         all_tokens = self.db_manager.get_all_oauth_tokens(guild_id)
@@ -1383,6 +1392,8 @@ def _resolve_color_category(recurrence: Optional[str], nth_weeks: Optional[List[
         if nth_weeks and len(nth_weeks) == 1:
             return "monthly"
         return "nth_week"
+    if recurrence == "monthly_date":
+        return "monthly"
     if recurrence == "irregular":
         return "irregular"
     return None
@@ -1425,17 +1436,36 @@ async def _batch_update_google_calendar_events(
 
 
 def _next_weekday_datetime(
-    weekday: int,
+    weekday: Optional[int],
     time_str: str,
     recurrence: str = "weekly",
     nth_weeks: Optional[List[int]] = None,
+    monthly_dates: Optional[List[int]] = None,
 ) -> datetime:
-    """次の該当曜日の日時を返す
+    """次の該当曜日（または指定日）の日時を返す
 
     nth_week の場合は直近で該当する第n週の曜日を返す。
+    monthly_date の場合は直近の指定日を返す。
     weekly/biweekly の場合は次の該当曜日を返す（今日が該当曜日なら今日）。
     """
     hour, minute = map(int, time_str.split(':'))
+
+    if recurrence == "monthly_date" and monthly_dates:
+        now = datetime.now()
+        for month_offset in range(3):
+            year = now.year
+            month = now.month + month_offset
+            if month > 12:
+                year += (month - 1) // 12
+                month = (month - 1) % 12 + 1
+            max_day = calendar.monthrange(year, month)[1]
+            for day in sorted(monthly_dates):
+                if day <= max_day:
+                    candidate = datetime(year, month, day, hour, minute)
+                    if candidate.date() >= now.date():
+                        return candidate
+        # フォールバック
+        return datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
 
     if recurrence == "nth_week" and nth_weeks:
         now = datetime.now()
@@ -1516,6 +1546,7 @@ def _event_data_to_parsed(event_data: Dict[str, Any], action: str) -> Dict[str, 
         "tags": "tags",
         "recurrence": "recurrence",
         "nth_weeks": "nth_weeks",
+        "monthly_dates": "monthly_dates",
         "time": "time",
         "weekday": "weekday",
         "duration_minutes": "duration_minutes",
@@ -2345,6 +2376,8 @@ async def _handle_add_event_direct(
         x_url=x_url, vrc_group_url=vrc_group_url, official_url=official_url,
     )
 
+    monthly_dates = parsed.get('monthly_dates')
+
     event_id = bot.db_manager.add_event(
         guild_id=guild_id,
         event_name=parsed['event_name'],
@@ -2363,6 +2396,7 @@ async def _handle_add_event_direct(
         discord_channel_id=str(channel_id),
         created_by=str(user_id),
         calendar_owner=calendar_owner or str(user_id),
+        monthly_dates=monthly_dates,
     )
 
     if not calendar_owner:
@@ -2377,11 +2411,13 @@ async def _handle_add_event_direct(
         rrule = RecurrenceCalculator.to_rrule(
             recurrence=parsed['recurrence'],
             nth_weeks=nth_weeks,
-            weekday=parsed['weekday'],
+            weekday=parsed.get('weekday', 0),
+            monthly_dates=monthly_dates,
         )
         start_dt = _next_weekday_datetime(
-            parsed['weekday'], parsed['time'],
+            parsed.get('weekday'), parsed['time'],
             recurrence=parsed['recurrence'], nth_weeks=nth_weeks,
+            monthly_dates=monthly_dates,
         )
         end_dt = start_dt + timedelta(minutes=parsed.get('duration_minutes', 60))
 
@@ -2436,7 +2472,7 @@ def _sync_google_calendar_edit(
     google_cal_data = json.loads(event['google_calendar_events'])
     google_event_ids = [ge['event_id'] for ge in google_cal_data]
 
-    structural_change = any(k in parsed for k in ('recurrence', 'time', 'weekday', 'nth_weeks', 'duration_minutes'))
+    structural_change = any(k in parsed for k in ('recurrence', 'time', 'weekday', 'nth_weeks', 'monthly_dates', 'duration_minutes'))
 
     cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
     if not cal_mgr:
@@ -2457,6 +2493,9 @@ def _sync_google_calendar_edit(
         # 新しいRRULEで再作成
         new_nth_weeks = parsed.get('nth_weeks') or (
             json.loads(event['nth_weeks']) if event.get('nth_weeks') else []
+        )
+        new_monthly_dates = parsed.get('monthly_dates') or (
+            json.loads(event['monthly_dates']) if event.get('monthly_dates') else None
         )
         new_weekday = parsed.get('weekday', event.get('weekday'))
         new_time = parsed.get('time', event.get('time'))
@@ -2481,10 +2520,11 @@ def _sync_google_calendar_edit(
             official_url=updates.get('official_url', event.get('official_url')),
         )
 
-        rrule = RecurrenceCalculator.to_rrule(new_recurrence, new_nth_weeks, new_weekday)
+        rrule = RecurrenceCalculator.to_rrule(new_recurrence, new_nth_weeks, new_weekday or 0, monthly_dates=new_monthly_dates)
         start_dt = _next_weekday_datetime(
             new_weekday, new_time,
             recurrence=new_recurrence, nth_weeks=new_nth_weeks,
+            monthly_dates=new_monthly_dates,
         )
         end_dt = start_dt + timedelta(minutes=new_duration)
 
@@ -2569,6 +2609,7 @@ async def _handle_edit_event_direct(
     if 'weekday' in parsed: updates['weekday'] = parsed['weekday']
     if 'recurrence' in parsed: updates['recurrence'] = parsed['recurrence']
     if 'nth_weeks' in parsed: updates['nth_weeks'] = parsed['nth_weeks']
+    if 'monthly_dates' in parsed: updates['monthly_dates'] = parsed['monthly_dates']
     if 'duration_minutes' in parsed: updates['duration_minutes'] = parsed['duration_minutes']
     if 'event_type' in parsed: updates['event_type'] = parsed['event_type']
     if 'description' in parsed: updates['description'] = parsed['description']
@@ -2719,9 +2760,17 @@ class EventDeleteView(discord.ui.View):
                 if nth_weeks:
                     nth_str = '・'.join([f"第{n}" for n in nth_weeks])
                     recurrence_str = f"{nth_str}週"
+            elif ev.get('recurrence') == 'monthly_date':
+                md_raw = ev.get('monthly_dates')
+                md = json.loads(md_raw) if isinstance(md_raw, str) else md_raw
+                if md:
+                    recurrence_str = f"毎月 {','.join(str(d) for d in md)}日"
 
             wd = ev.get('weekday')
-            weekday_str = weekdays[wd] + '曜' if isinstance(wd, int) and 0 <= wd <= 6 else ''
+            if ev.get('recurrence') == 'monthly_date':
+                weekday_str = ''
+            else:
+                weekday_str = weekdays[wd] + '曜' if isinstance(wd, int) and 0 <= wd <= 6 else ''
             time_str = ev.get('time') or '時刻未定'
             desc = f"{recurrence_str} {weekday_str} {time_str}".strip()
 
@@ -2917,9 +2966,17 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
     tags = parsed.get('tags', []) or []
     nth = parsed.get('nth_weeks')
     nth_str = f"第{','.join(str(n) for n in nth)}週" if nth else ""
+    md = parsed.get('monthly_dates')
+    md_str = f"毎月 {','.join(str(d) for d in md)}日" if md else ""
+    recurrence_detail = nth_str or md_str
     weekdays = ['月', '火', '水', '木', '金', '土', '日']
     weekday_val = parsed.get('weekday')
-    weekday_str = weekdays[weekday_val] if isinstance(weekday_val, int) and 0 <= weekday_val <= 6 else "未設定"
+    if parsed.get('recurrence') == 'monthly_date':
+        weekday_str = "—"
+    elif isinstance(weekday_val, int) and 0 <= weekday_val <= 6:
+        weekday_str = weekdays[weekday_val]
+    else:
+        weekday_str = "未設定"
     color_name = parsed.get('color_name', '未設定')
     if parsed.get('_auto_color') and color_name and color_name != '未設定':
         color_display = f"{color_name}（自動割当）"
@@ -2928,7 +2985,7 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
     calendar_name = parsed.get('calendar_name') or 'デフォルト'
     return (
         f"予定名: {parsed.get('event_name', '未設定')}\n"
-        f"繰り返し: {RECURRENCE_TYPES.get(parsed.get('recurrence'), parsed.get('recurrence'))} {nth_str}\n"
+        f"繰り返し: {RECURRENCE_TYPES.get(parsed.get('recurrence'), parsed.get('recurrence'))} {recurrence_detail}\n"
         f"曜日: {weekday_str}\n"
         f"時刻: {parsed.get('time', '未設定')}\n"
         f"所要時間: {parsed.get('duration_minutes', 60)}分\n"
@@ -2970,16 +3027,29 @@ def build_edit_summary(parsed: Dict[str, Any], existing_event: Dict[str, Any]) -
             return f"第{','.join(str(n) for n in val)}週"
         return ""
 
-    def fmt_recurrence(val, nth_val=None):
+    def fmt_monthly_dates(val):
+        if isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                return ""
+        if val:
+            return f"毎月 {','.join(str(d) for d in val)}日"
+        return ""
+
+    def fmt_recurrence(val, nth_val=None, md_val=None):
         label = RECURRENCE_TYPES.get(val, val) if val else "未設定"
         nth_str = fmt_nth_weeks(nth_val)
-        if nth_str:
-            return f"{label} {nth_str}"
+        md_str = fmt_monthly_dates(md_val)
+        detail = nth_str or md_str
+        if detail:
+            return f"{label} {detail}"
         return label
 
     # 変更対象フィールドのマッピング（parsedのキー → 表示名, フォーマッタ）
     field_defs = {
         "recurrence": ("繰り返し", None),  # 特殊処理
+        "monthly_dates": ("開催日", fmt_monthly_dates),
         "weekday": ("曜日", fmt_weekday),
         "time": ("時刻", None),
         "duration_minutes": ("所要時間", lambda v: f"{v}分"),
@@ -3001,8 +3071,10 @@ def build_edit_summary(parsed: Dict[str, Any], existing_event: Dict[str, Any]) -
         if key == "recurrence":
             old_nth = existing_event.get("nth_weeks")
             new_nth = parsed.get("nth_weeks", old_nth)
-            old_display = fmt_recurrence(old_val, old_nth)
-            new_display = fmt_recurrence(new_val, new_nth)
+            old_md = existing_event.get("monthly_dates")
+            new_md = parsed.get("monthly_dates", old_md)
+            old_display = fmt_recurrence(old_val, old_nth, old_md)
+            new_display = fmt_recurrence(new_val, new_nth, new_md)
         elif formatter:
             old_display = formatter(old_val)
             new_display = formatter(new_val)
@@ -3175,7 +3247,16 @@ def create_event_list_embed(events: List[Dict[str, Any]]) -> discord.Embed:
             recurrence_str = f"{nth_str}週"
 
         weekdays = ['月', '火', '水', '木', '金', '土', '日']
-        weekday_str = weekdays[event['weekday']] if event['weekday'] is not None else ""
+
+        if event['recurrence'] == 'monthly_date':
+            monthly_dates_raw = event.get('monthly_dates')
+            monthly_dates = json.loads(monthly_dates_raw) if isinstance(monthly_dates_raw, str) else monthly_dates_raw
+            if monthly_dates:
+                recurrence_str = f"毎月 {','.join(str(d) for d in monthly_dates)}日"
+            day_part = ""
+        else:
+            day_part = f"{weekdays[event['weekday']]}曜日" if event['weekday'] is not None else ""
+
         time_str = event['time'] if event['time'] else '時刻未定'
 
         tags = json.loads(event['tags']) if isinstance(event['tags'], str) else event['tags']
@@ -3184,7 +3265,7 @@ def create_event_list_embed(events: List[Dict[str, Any]]) -> discord.Embed:
         embed.add_field(
             name=f"{event['event_name']}",
             value=(
-                f"🔄 {recurrence_str}{weekday_str}曜日\n"
+                f"🔄 {recurrence_str}{day_part}\n"
                 f"⏰ {time_str}"
                 f"{tags_str}"
             ),
@@ -3477,8 +3558,15 @@ def _recreate_calendar_event(
 
     weekday = event.get('weekday')
     time_str = event.get('time')
-    if weekday is None or not time_str:
-        return None
+    monthly_dates_raw = event.get('monthly_dates')
+    monthly_dates = json.loads(monthly_dates_raw) if monthly_dates_raw else None
+
+    if recurrence == 'monthly_date':
+        if not monthly_dates or not time_str:
+            return None
+    else:
+        if weekday is None or not time_str:
+            return None
 
     nth_weeks = json.loads(event['nth_weeks']) if event.get('nth_weeks') else []
 
@@ -3497,11 +3585,13 @@ def _recreate_calendar_event(
         rrule = RecurrenceCalculator.to_rrule(
             recurrence=recurrence,
             nth_weeks=nth_weeks,
-            weekday=weekday,
+            weekday=weekday or 0,
+            monthly_dates=monthly_dates,
         )
         start_dt = _next_weekday_datetime(
             weekday, time_str,
             recurrence=recurrence, nth_weeks=nth_weeks,
+            monthly_dates=monthly_dates,
         )
         duration_minutes = event.get('duration_minutes', 60)
         end_dt = start_dt + timedelta(minutes=duration_minutes)

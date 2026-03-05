@@ -6,17 +6,27 @@ class RecurrenceCalculator:
     WEEKDAY_MAP = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 
     @staticmethod
-    def to_rrule(recurrence: str, nth_weeks: List[int], weekday: int) -> str:
+    def to_rrule(
+        recurrence: str,
+        nth_weeks: List[int],
+        weekday: int,
+        monthly_dates: Optional[List[int]] = None,
+    ) -> str:
         """繰り返しパターンからRRULE文字列を生成
 
         Args:
-            recurrence: 繰り返しタイプ (weekly, biweekly, nth_week)
+            recurrence: 繰り返しタイプ (weekly, biweekly, nth_week, monthly_date)
             nth_weeks: 第n週のリスト（nth_weekの場合）
             weekday: 曜日（0=月, 6=日）
+            monthly_dates: 毎月の日付リスト（monthly_dateの場合）
 
         Returns:
             RRULE文字列
         """
+        if recurrence == "monthly_date":
+            days = ",".join(str(d) for d in monthly_dates)
+            return f"RRULE:FREQ=MONTHLY;BYMONTHDAY={days}"
+
         day = RecurrenceCalculator.WEEKDAY_MAP[weekday]
         if recurrence == "weekly":
             return f"RRULE:FREQ=WEEKLY;BYDAY={day}"
@@ -35,19 +45,21 @@ class RecurrenceCalculator:
         weekday: int,
         start_date: datetime,
         months_ahead: int = 3,
-        end_date_limit: Optional[datetime] = None
+        end_date_limit: Optional[datetime] = None,
+        monthly_dates: Optional[List[int]] = None,
     ) -> List[datetime]:
         """
         繰り返しパターンから日付リストを生成
-        
+
         Args:
-            recurrence: 繰り返しタイプ (weekly, biweekly, nth_week)
+            recurrence: 繰り返しタイプ (weekly, biweekly, nth_week, monthly_date)
             nth_weeks: 第n週のリスト（nth_weekの場合）
             weekday: 曜日（0=月, 6=日）
             start_date: 開始日
             months_ahead: 何ヶ月先まで生成するか
             end_date_limit: 生成の最終期限（months_aheadより優先される）
-        
+            monthly_dates: 毎月の日付リスト（monthly_dateの場合）
+
         Returns:
             日付のリスト
         """
@@ -83,11 +95,11 @@ class RecurrenceCalculator:
             # 第n週
             # 当月の1日から開始して月ごとにループ
             temp_date = current_date.replace(day=1)
-            
+
             while temp_date <= end_date:
                 year = temp_date.year
                 month = temp_date.month
-                
+
                 for week_num in nth_weeks:
                     date = RecurrenceCalculator._get_nth_weekday(
                         year, month, week_num, weekday
@@ -95,13 +107,34 @@ class RecurrenceCalculator:
                     # 開始日以降かつ終了日以前の場合のみ追加
                     if date and start_date.date() <= date.date() <= end_date.date():
                         dates.append(date)
-                
+
                 # 次の月へ
                 if month == 12:
                     temp_date = temp_date.replace(year=year+1, month=1)
                 else:
                     temp_date = temp_date.replace(month=month+1)
-        
+
+        elif recurrence == "monthly_date" and monthly_dates:
+            # 毎月指定日
+            temp_date = current_date.replace(day=1)
+
+            while temp_date <= end_date:
+                year = temp_date.year
+                month = temp_date.month
+                max_day = calendar.monthrange(year, month)[1]
+
+                for day in monthly_dates:
+                    if day <= max_day:
+                        candidate = datetime(year, month, day)
+                        if start_date.date() <= candidate.date() <= end_date.date():
+                            dates.append(candidate)
+
+                # 次の月へ
+                if month == 12:
+                    temp_date = temp_date.replace(year=year+1, month=1)
+                else:
+                    temp_date = temp_date.replace(month=month+1)
+
         return sorted(list(set(dates)))
     
     @staticmethod
