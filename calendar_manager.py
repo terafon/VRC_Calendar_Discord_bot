@@ -37,6 +37,8 @@ class GoogleCalendarManager:
 
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            if on_token_refresh and creds.token:
+                on_token_refresh(creds.token, creds.expiry.isoformat() if creds.expiry else "")
 
         self.credentials = creds
         self.service = build('calendar', 'v3', credentials=creds)

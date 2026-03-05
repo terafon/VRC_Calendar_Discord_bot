@@ -686,13 +686,20 @@ class FirestoreManager:
         })
 
     def get_and_delete_oauth_state(self, state: str) -> Optional[dict]:
-        """CSRF state をワンタイム検証（取得して削除）"""
+        """CSRF state をワンタイム検証（トランザクションで取得して削除）"""
         ref = self.db.collection("oauth_states").document(state)
-        doc = ref.get()
-        if not doc.exists:
+
+        @firestore.transactional
+        def _consume_state(transaction):
+            doc = ref.get(transaction=transaction)
+            if not doc.exists:
+                return None
+            transaction.delete(ref)
+            return doc.to_dict()
+
+        data = _consume_state(self.db.transaction())
+        if data is None:
             return None
-        data = doc.to_dict()
-        ref.delete()
 
         # 有効期限チェック（30分）
         created_at = data.get("created_at")
