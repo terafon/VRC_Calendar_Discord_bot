@@ -24,6 +24,8 @@ class RecurrenceCalculator:
             RRULE文字列
         """
         if recurrence == "monthly_date":
+            if not monthly_dates:
+                raise ValueError("monthly_date requires monthly_dates parameter")
             days = ",".join(str(d) for d in monthly_dates)
             return f"RRULE:FREQ=MONTHLY;BYMONTHDAY={days}"
 

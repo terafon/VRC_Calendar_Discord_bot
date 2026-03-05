@@ -1483,6 +1483,10 @@ def _next_weekday_datetime(
         # フォールバック（通常到達しない）
         return _next_weekday_datetime(weekday, time_str)
 
+    if weekday is None:
+        # monthly_date 等で曜日がない場合のフォールバック
+        return datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+
     now = datetime.now()
     days_ahead = (weekday - now.weekday()) % 7
     target = now + timedelta(days=days_ahead)
