@@ -1590,6 +1590,8 @@ def _event_data_to_parsed(event_data: Dict[str, Any], action: str) -> Dict[str, 
         "vrc_group_url": "vrc_group_url",
         "official_url": "official_url",
         "calendar_name": "calendar_name",
+        "skip_date": "skip_date",
+        "start_date": "start_date",
     }
     for src, dst in field_mapping.items():
         val = event_data.get(src)
@@ -1616,6 +1618,9 @@ async def _dispatch_action(
         return await confirm_and_handle_edit_event(bot, interaction, parsed)
     elif action == "delete":
         return await confirm_and_handle_delete_event(bot, interaction, parsed)
+    elif action == "skip":
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        return await _handle_skip_event_direct(bot, guild_id, parsed)
     elif action == "search":
         return await handle_search_event(bot, interaction, parsed)
     else:
@@ -1643,6 +1648,8 @@ async def _dispatch_action_in_thread(
         return await _confirm_and_handle_in_thread(bot, thread, author, parsed, guild_id, "edit")
     elif action == "delete":
         return await _confirm_and_handle_in_thread(bot, thread, author, parsed, guild_id, "delete")
+    elif action == "skip":
+        return await _confirm_and_handle_in_thread(bot, thread, author, parsed, guild_id, "skip")
     elif action == "search":
         result = await _handle_search_in_thread(bot, thread, parsed, guild_id)
         return (result, True)  # 検索は常にセッション終了
@@ -1773,6 +1780,13 @@ async def _confirm_and_handle_in_thread(
             f"{edit_summary}"
         )
         title = "予定編集の確認"
+    elif action == "skip":
+        events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
+        if not events:
+            return (f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。", True)
+        event = events[0]
+        summary = build_skip_summary(parsed, event)
+        title = "予定スキップの確認"
     elif action == "delete":
         events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
         if not events:
@@ -1810,6 +1824,9 @@ async def _confirm_and_handle_in_thread(
         return (result, True)
     elif action == "edit":
         result = await _handle_edit_event_direct(bot, guild_id, parsed)
+        return (result, True)
+    elif action == "skip":
+        result = await _handle_skip_event_direct(bot, guild_id, parsed)
         return (result, True)
     elif action == "delete":
         result = await _handle_delete_event_direct(bot, guild_id, parsed)
@@ -2506,7 +2523,7 @@ def _sync_google_calendar_edit(
     google_cal_data = json.loads(event['google_calendar_events'])
     google_event_ids = [ge['event_id'] for ge in google_cal_data]
 
-    structural_change = any(k in parsed for k in ('recurrence', 'time', 'weekday', 'nth_weeks', 'monthly_dates', 'duration_minutes'))
+    structural_change = any(k in parsed for k in ('recurrence', 'time', 'weekday', 'nth_weeks', 'monthly_dates', 'duration_minutes', 'start_date'))
 
     cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
     if not cal_mgr:
@@ -2555,11 +2572,17 @@ def _sync_google_calendar_edit(
         )
 
         rrule = RecurrenceCalculator.to_rrule(new_recurrence, new_nth_weeks, new_weekday or 0, monthly_dates=new_monthly_dates)
-        start_dt = _next_weekday_datetime(
-            new_weekday, new_time,
-            recurrence=new_recurrence, nth_weeks=new_nth_weeks,
-            monthly_dates=new_monthly_dates,
-        )
+        # start_date が指定されていれば使用、なければ従来通り計算
+        if parsed.get('start_date'):
+            hour, minute = map(int, new_time.split(':'))
+            sd = datetime.strptime(parsed['start_date'], '%Y-%m-%d')
+            start_dt = sd.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        else:
+            start_dt = _next_weekday_datetime(
+                new_weekday, new_time,
+                recurrence=new_recurrence, nth_weeks=new_nth_weeks,
+                monthly_dates=new_monthly_dates,
+            )
         end_dt = start_dt + timedelta(minutes=new_duration)
 
         google_event_id = cal_mgr.create_recurring_event(
@@ -2647,6 +2670,7 @@ async def _handle_edit_event_direct(
     if 'duration_minutes' in parsed: updates['duration_minutes'] = parsed['duration_minutes']
     if 'event_type' in parsed: updates['event_type'] = parsed['event_type']
     if 'description' in parsed: updates['description'] = parsed['description']
+    if 'start_date' in parsed: updates['start_date'] = parsed['start_date']
     if 'tags' in parsed:
         tags = parsed.get('tags', []) or []
         missing_tags = bot.db_manager.find_missing_tags(guild_id, tags)
@@ -2688,6 +2712,57 @@ async def _handle_edit_event_direct(
         return error
 
     return f"✅ 予定「{event['event_name']}」を更新しました。"
+
+
+async def _handle_skip_event_direct(
+    bot: CalendarBot,
+    guild_id: str,
+    parsed: Dict[str, Any],
+) -> str:
+    """定期予定の特定回をスキップする"""
+    events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
+    if not events:
+        return f"❌ 予定「{parsed.get('event_name')}」が見つかりませんでした。"
+
+    event = events[0]
+    skip_date = parsed.get('skip_date')
+    if not skip_date:
+        return "❌ スキップする日付が指定されていません。"
+
+    # 不定期イベントは個別日付管理なので skip 不要
+    if event.get('recurrence') == 'irregular':
+        return "❌ 不定期イベントはスキップできません。個別の日付を削除してください。"
+
+    # Google Calendar のインスタンスを削除
+    google_cal_events = event.get('google_calendar_events')
+    if google_cal_events:
+        cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+        cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner) if cal_owner else None
+        if not cal_mgr:
+            return f"❌ この予定が登録されたカレンダー（<@{cal_owner}>）の認証が無効です。再認証してもらってください。"
+
+        google_event_ids = json.loads(google_cal_events)
+        for ge in google_event_ids:
+            try:
+                cal_mgr.delete_recurring_instance(
+                    ge['event_id'], skip_date, event.get('time', '00:00')
+                )
+            except ValueError as e:
+                return f"❌ {e}"
+            except Exception as e:
+                return f"❌ Google Calendar のインスタンス削除に失敗しました: {e}"
+
+    # Firestore に excluded_dates を追加
+    bot.db_manager.add_excluded_date(event['id'], skip_date)
+
+    # 日付を表示用にフォーマット
+    try:
+        dt = datetime.strptime(skip_date, "%Y-%m-%d")
+        display_date = f"{dt.month}月{dt.day}日"
+    except ValueError:
+        display_date = skip_date
+
+    return f"✅ {display_date}の「{event['event_name']}」をスキップしました。"
 
 
 async def _handle_delete_event_direct(
@@ -2734,6 +2809,11 @@ async def handle_delete_event(bot: CalendarBot, interaction: discord.Interaction
     """予定削除処理（interactionベース → 共通ロジックに委譲）"""
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
     return await _handle_delete_event_direct(bot, guild_id, parsed)
+
+async def handle_skip_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
+    """予定スキップ処理（interactionベース → 共通ロジックに委譲）"""
+    guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+    return await _handle_skip_event_direct(bot, guild_id, parsed)
 
 async def handle_search_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> Optional[str]:
     """予定検索処理"""
@@ -3038,6 +3118,21 @@ def build_event_summary(parsed: Dict[str, Any]) -> str:
         f"説明: {parsed.get('description', '')}"
     )
 
+def build_skip_summary(parsed: Dict[str, Any], existing_event: Dict[str, Any]) -> str:
+    """スキップ内容のサマリー文字列を構築する"""
+    skip_date = parsed.get('skip_date', '')
+    try:
+        dt = datetime.strptime(skip_date, "%Y-%m-%d")
+        display_date = f"{dt.year}年{dt.month}月{dt.day}日"
+    except ValueError:
+        display_date = skip_date
+    return (
+        f"対象: {existing_event['event_name']} (ID {existing_event['id']})\n"
+        f"繰り返し: {RECURRENCE_TYPES.get(existing_event.get('recurrence', ''), existing_event.get('recurrence', ''))}\n"
+        f"スキップ日: {display_date}"
+    )
+
+
 def build_edit_summary(parsed: Dict[str, Any], existing_event: Dict[str, Any]) -> str:
     """編集時の変更前後を表示するサマリーを構築する"""
     weekdays = ['月', '火', '水', '木', '金', '土', '日']
@@ -3096,6 +3191,7 @@ def build_edit_summary(parsed: Dict[str, Any], existing_event: Dict[str, Any]) -
         "tags": ("タグ", fmt_tags),
         "description": ("説明", lambda v: v or "なし"),
         "color_name": ("色", lambda v: v or "未設定"),
+        "start_date": ("開始日", lambda v: v or "未設定"),
         "x_url": ("X URL", lambda v: v or "なし"),
         "vrc_group_url": ("VRCグループURL", lambda v: v or "なし"),
         "official_url": ("公式サイトURL", lambda v: v or "なし"),

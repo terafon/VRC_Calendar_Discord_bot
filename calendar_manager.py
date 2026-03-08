@@ -234,6 +234,35 @@ class GoogleCalendarManager:
         
         return None
 
+    def delete_recurring_instance(self, event_id: str, target_date: str, time_str: str):
+        """繰り返しイベントの特定回を削除する
+
+        Args:
+            event_id: マスターイベントID
+            target_date: 削除対象日 (YYYY-MM-DD)
+            time_str: イベントの開始時刻 (HH:MM)
+        """
+        target = datetime.strptime(target_date, "%Y-%m-%d")
+        time_min = datetime(target.year, target.month, target.day, 0, 0, 0).isoformat() + "+09:00"
+        time_max = datetime(target.year, target.month, target.day, 23, 59, 59).isoformat() + "+09:00"
+
+        instances = self.service.events().instances(
+            calendarId=self.calendar_id,
+            eventId=event_id,
+            timeMin=time_min,
+            timeMax=time_max,
+        ).execute()
+
+        items = instances.get("items", [])
+        if not items:
+            raise ValueError(f"{target_date} に該当するイベントインスタンスが見つかりません")
+
+        instance_id = items[0]["id"]
+        self.service.events().delete(
+            calendarId=self.calendar_id,
+            eventId=instance_id,
+        ).execute()
+
     def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
         """単一イベントを取得。存在しない場合はNoneを返す。"""
         try:

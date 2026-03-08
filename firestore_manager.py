@@ -168,9 +168,15 @@ class FirestoreManager:
                     end_date_limit=end_date,
                     monthly_dates=monthly_dates,
                 )
+                # excluded_dates を除外
+                excluded_raw = event.get("excluded_dates")
+                excluded = json.loads(excluded_raw) if excluded_raw else []
                 for date in dates:
+                    date_str = date.strftime("%Y-%m-%d")
+                    if date_str in excluded:
+                        continue
                     if start_date.date() <= date.date() <= end_date.date():
-                        result.append({**event, "date": date.strftime("%Y-%m-%d")})
+                        result.append({**event, "date": date_str})
 
         # フィルタリング
         if tags:
@@ -208,6 +214,35 @@ class FirestoreManager:
                 fs_updates[key] = value
         fs_updates["updated_at"] = datetime.now(timezone.utc).isoformat()
         ref.update(fs_updates)
+
+    def add_excluded_date(self, event_id: int, date_str: str):
+        """除外日を追加"""
+        ref = self._find_event_ref(event_id)
+        if not ref:
+            return
+        doc = ref.get().to_dict()
+        excluded = json.loads(doc.get("excluded_dates", "[]"))
+        if date_str not in excluded:
+            excluded.append(date_str)
+            excluded.sort()
+            ref.update({
+                "excluded_dates": json.dumps(excluded),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+    def remove_excluded_date(self, event_id: int, date_str: str):
+        """除外日を削除"""
+        ref = self._find_event_ref(event_id)
+        if not ref:
+            return
+        doc = ref.get().to_dict()
+        excluded = json.loads(doc.get("excluded_dates", "[]"))
+        if date_str in excluded:
+            excluded.remove(date_str)
+            ref.update({
+                "excluded_dates": json.dumps(excluded),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
 
     def delete_event(self, event_id: int):
         """予定を削除（論理削除）"""
