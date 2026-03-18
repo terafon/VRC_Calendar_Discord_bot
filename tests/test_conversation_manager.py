@@ -1,10 +1,12 @@
 """conversation_manager.py のユニットテスト"""
+import asyncio
 import time
 import unittest
 from conversation_manager import ConversationManager, ConversationSession
 
 
 class TestConversationSession(unittest.TestCase):
+    """ConversationSession は同期クラスなので同期テストで検証"""
     def test_is_expired_false(self):
         session = ConversationSession("g1", 1, 100, 200, None, timeout=300)
         self.assertFalse(session.is_expired())
@@ -31,7 +33,7 @@ class TestConversationManager(unittest.IsolatedAsyncioTestCase):
     async def test_get_session_expired_returns_none(self):
         mgr = ConversationManager()
         await mgr.create_session("g1", 1, 100, 200, None, timeout=0)
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
         self.assertIsNone(await mgr.get_session(100))
 
     async def test_remove_session(self):
@@ -47,7 +49,7 @@ class TestConversationManager(unittest.IsolatedAsyncioTestCase):
         s2 = ConversationSession("g2", 2, 101, 201, None, timeout=300)
         mgr._sessions[100] = s1
         mgr._sessions[101] = s2
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
         expired = await mgr.cleanup_expired()
         self.assertIn(100, expired)
         self.assertNotIn(101, expired)
@@ -56,13 +58,13 @@ class TestConversationManager(unittest.IsolatedAsyncioTestCase):
         mgr = ConversationManager()
         await mgr.create_session("g1", 1, 100, 200, None, timeout=0)
         await mgr.create_session("g2", 2, 101, 201, None, timeout=300)
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
         self.assertEqual(mgr.active_count, 1)
 
     async def test_create_session_triggers_cleanup(self):
         mgr = ConversationManager()
         await mgr.create_session("g1", 1, 100, 200, None, timeout=0)
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
         # 新しいセッション作成時にクリーンアップされる
         await mgr.create_session("g2", 2, 101, 201, None, timeout=300)
         self.assertIsNone(await mgr.get_session(100))

@@ -36,7 +36,7 @@ class ConversationSession:
 
 
 class ConversationManager:
-    """会話セッションをスレッドIDで管理する（asyncio.Lock でスレッド安全）"""
+    """会話セッションをスレッドIDで管理する（asyncio.Lock で同一イベントループ上のタスク間排他）"""
 
     def __init__(self):
         self._sessions: Dict[int, ConversationSession] = {}

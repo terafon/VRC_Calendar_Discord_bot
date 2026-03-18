@@ -869,6 +869,8 @@ class FirestoreManager:
             "changes": json.dumps(changes, ensure_ascii=False),
         }
         _, ref = self._guild_ref(guild_id).collection("event_history").add(data)
+        # 古い履歴を自動クリーンアップ（イベントごとに100件まで保持）
+        self.cleanup_old_history(guild_id, event_id, keep_count=100)
         return ref.id
 
     def get_event_history(
@@ -885,7 +887,7 @@ class FirestoreManager:
         return [doc.to_dict() for doc in query.get()]
 
     def cleanup_old_history(self, guild_id: str, event_id: int, keep_count: int = 100):
-        """イベントごとの履歴を keep_count 件に制限し、古いものを削除"""
+        """イベントごとの履歴を keep_count 件に制限し、古いものをバッチ削除"""
         docs = (
             self._guild_ref(guild_id).collection("event_history")
             .where(filter=firestore.FieldFilter("event_id", "==", event_id))
@@ -893,5 +895,12 @@ class FirestoreManager:
             .offset(keep_count)
             .get()
         )
-        for doc in docs:
-            doc.reference.delete()
+        docs_list = list(docs)
+        if not docs_list:
+            return
+        # WriteBatch で最大500件ずつ削除
+        for i in range(0, len(docs_list), 500):
+            batch = self.db.batch()
+            for doc in docs_list[i:i + 500]:
+                batch.delete(doc.reference)
+            batch.commit()
