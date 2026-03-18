@@ -846,3 +846,52 @@ class FirestoreManager:
                 .get()
             )
         return [doc.to_dict() for doc in docs]
+
+    # ---- イベント変更履歴 ----
+
+    def add_event_history(
+        self,
+        guild_id: str,
+        event_id: int,
+        event_name: str,
+        action: str,
+        changed_by: str,
+        changes: dict,
+    ) -> str:
+        """イベント変更履歴を追加"""
+        now = datetime.now(timezone.utc).isoformat()
+        data = {
+            "event_id": event_id,
+            "event_name": event_name,
+            "action": action,
+            "changed_by": changed_by,
+            "changed_at": now,
+            "changes": json.dumps(changes, ensure_ascii=False),
+        }
+        _, ref = self._guild_ref(guild_id).collection("event_history").add(data)
+        return ref.id
+
+    def get_event_history(
+        self,
+        guild_id: str,
+        event_id: Optional[int] = None,
+        limit: int = 20,
+    ) -> List[dict]:
+        """イベント変更履歴を取得（新しい順）"""
+        query = self._guild_ref(guild_id).collection("event_history")
+        if event_id is not None:
+            query = query.where(filter=firestore.FieldFilter("event_id", "==", event_id))
+        query = query.order_by("changed_at", direction=firestore.Query.DESCENDING).limit(limit)
+        return [doc.to_dict() for doc in query.get()]
+
+    def cleanup_old_history(self, guild_id: str, event_id: int, keep_count: int = 100):
+        """イベントごとの履歴を keep_count 件に制限し、古いものを削除"""
+        docs = (
+            self._guild_ref(guild_id).collection("event_history")
+            .where(filter=firestore.FieldFilter("event_id", "==", event_id))
+            .order_by("changed_at", direction=firestore.Query.DESCENDING)
+            .offset(keep_count)
+            .get()
+        )
+        for doc in docs:
+            doc.reference.delete()

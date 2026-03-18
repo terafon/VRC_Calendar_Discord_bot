@@ -679,6 +679,74 @@ def setup_commands(bot: CalendarBot):
         embed = create_help_embed()
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    # ---- 変更履歴コマンド ----
+    @bot.tree.command(name="履歴", description="予定の変更履歴を表示します")
+    @app_commands.describe(イベント名="特定のイベントに絞り込む場合に指定")
+    async def history_command(interaction: discord.Interaction, イベント名: str = None):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        if not interaction.guild_id:
+            await interaction.followup.send("⚠️ このコマンドはサーバー内で使用してください。", ephemeral=True)
+            return
+
+        event_id = None
+        if イベント名:
+            events = bot.db_manager.search_events_by_name(イベント名, guild_id)
+            if not events:
+                await interaction.followup.send(f"❌ 予定「{イベント名}」が見つかりませんでした。", ephemeral=True)
+                return
+            event_id = events[0]['id']
+
+        history = bot.db_manager.get_event_history(guild_id, event_id=event_id, limit=20)
+        if not history:
+            await interaction.followup.send("📭 変更履歴がありません。", ephemeral=True)
+            return
+
+        ACTION_ICONS = {"add": "🟢", "edit": "🟡", "delete": "🔴", "skip": "🟠"}
+        ACTION_LABELS = {"add": "追加", "edit": "編集", "delete": "削除", "skip": "スキップ"}
+
+        embed = discord.Embed(title="📋 予定変更履歴", color=0x5865F2)
+        for entry in history:
+            action = entry.get('action', '?')
+            icon = ACTION_ICONS.get(action, "⚪")
+            label = ACTION_LABELS.get(action, action)
+            event_name = entry.get('event_name', '不明')
+            changed_by = entry.get('changed_by', '')
+            changed_at = entry.get('changed_at', '')[:16].replace('T', ' ')
+
+            changes = {}
+            changes_raw = entry.get('changes', '{}')
+            if isinstance(changes_raw, str):
+                try:
+                    changes = json.loads(changes_raw)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            else:
+                changes = changes_raw
+
+            summary = changes.get('summary', '')
+            user_mention = f"<@{changed_by}>" if changed_by else "不明"
+
+            field_value = f"👤 {user_mention} | {changed_at} UTC\n📝 {summary}"
+
+            # 編集時は変更フィールドの詳細を表示
+            if action == "edit" and changes.get("fields"):
+                details = []
+                for key, val in changes["fields"].items():
+                    if isinstance(val, dict) and "before" in val and "after" in val:
+                        details.append(f"  {key}: {val['before']} → {val['after']}")
+                if details:
+                    field_value += "\n" + "\n".join(details[:5])
+
+            embed.add_field(
+                name=f"{icon} [{label}] {event_name}",
+                value=field_value,
+                inline=False,
+            )
+
+        embed.set_footer(text=f"直近 {len(history)} 件を表示")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     # ---- 色管理グループ ----
     color_group = app_commands.Group(name="色", description="色プリセットの管理")
 
@@ -1630,7 +1698,7 @@ async def _dispatch_action(
         return await confirm_and_handle_delete_event(bot, interaction, parsed)
     elif action == "skip":
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-        return await _handle_skip_event_direct(bot, guild_id, parsed)
+        return await _handle_skip_event_direct(bot, guild_id, parsed, user_id=str(interaction.user.id))
     elif action == "search":
         return await handle_search_event(bot, interaction, parsed)
     else:
@@ -1833,13 +1901,13 @@ async def _confirm_and_handle_in_thread(
         result = await _handle_add_event_direct(bot, guild_id, thread.parent_id, author.id, parsed)
         return (result, True)
     elif action == "edit":
-        result = await _handle_edit_event_direct(bot, guild_id, parsed)
+        result = await _handle_edit_event_direct(bot, guild_id, parsed, user_id=str(author.id))
         return (result, True)
     elif action == "skip":
-        result = await _handle_skip_event_direct(bot, guild_id, parsed)
+        result = await _handle_skip_event_direct(bot, guild_id, parsed, user_id=str(author.id))
         return (result, True)
     elif action == "delete":
-        result = await _handle_delete_event_direct(bot, guild_id, parsed)
+        result = await _handle_delete_event_direct(bot, guild_id, parsed, user_id=str(author.id))
         return (result, True)
     return (None, True)
 
@@ -2460,6 +2528,25 @@ async def _handle_add_event_direct(
         monthly_dates=monthly_dates,
     )
 
+    # 変更履歴を記録
+    bot.db_manager.add_event_history(
+        guild_id=guild_id,
+        event_id=event_id,
+        event_name=parsed['event_name'],
+        action="add",
+        changed_by=str(user_id),
+        changes={
+            "summary": "新規登録",
+            "fields": {
+                "recurrence": parsed['recurrence'],
+                "weekday": parsed.get('weekday'),
+                "time": parsed.get('time'),
+                "duration_minutes": parsed.get('duration_minutes', 60),
+                "tags": tags,
+            },
+        },
+    )
+
     if not calendar_owner:
         return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
 
@@ -2668,6 +2755,7 @@ async def _handle_edit_event_direct(
     bot: CalendarBot,
     guild_id: str,
     parsed: Dict[str, Any],
+    user_id: str = "",
 ) -> str:
     """interactionなしで予定を編集する（スレッド内用）"""
     events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
@@ -2723,6 +2811,24 @@ async def _handle_edit_event_direct(
 
     bot.db_manager.update_event(event['id'], updates)
 
+    # 変更履歴を記録（before/after形式）
+    change_fields = {}
+    for key, new_val in updates.items():
+        if key in ('start_date',):
+            continue
+        old_val = event.get(key)
+        if key == 'tags':
+            old_val = _parse_json_field(old_val)
+        change_fields[key] = {"before": old_val, "after": new_val}
+    bot.db_manager.add_event_history(
+        guild_id=guild_id,
+        event_id=event['id'],
+        event_name=event['event_name'],
+        action="edit",
+        changed_by=user_id,
+        changes={"summary": "予定を編集", "fields": change_fields},
+    )
+
     result = _sync_google_calendar_edit(bot, guild_id, event, parsed, updates, cal_owner)
     if result and result.startswith("❌"):
         return result
@@ -2737,6 +2843,7 @@ async def _handle_skip_event_direct(
     bot: CalendarBot,
     guild_id: str,
     parsed: Dict[str, Any],
+    user_id: str = "",
 ) -> str:
     """定期予定の特定回をスキップする"""
     events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
@@ -2774,6 +2881,16 @@ async def _handle_skip_event_direct(
     # Firestore に excluded_dates を追加
     bot.db_manager.add_excluded_date(event['id'], skip_date)
 
+    # 変更履歴を記録
+    bot.db_manager.add_event_history(
+        guild_id=guild_id,
+        event_id=event['id'],
+        event_name=event['event_name'],
+        action="skip",
+        changed_by=user_id,
+        changes={"summary": f"{skip_date} をスキップ", "skip_date": skip_date},
+    )
+
     # 日付を表示用にフォーマット
     try:
         dt = datetime.strptime(skip_date, "%Y-%m-%d")
@@ -2788,6 +2905,7 @@ async def _handle_delete_event_direct(
     bot: CalendarBot,
     guild_id: str,
     parsed: Dict[str, Any],
+    user_id: str = "",
 ) -> str:
     """interactionなしで予定を削除する（スレッド内用）"""
     events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
@@ -2807,6 +2925,16 @@ async def _handle_delete_event_direct(
 
     bot.db_manager.delete_event(event['id'])
 
+    # 変更履歴を記録
+    bot.db_manager.add_event_history(
+        guild_id=guild_id,
+        event_id=event['id'],
+        event_name=event['event_name'],
+        action="delete",
+        changed_by=user_id,
+        changes={"summary": "予定を削除"},
+    )
+
     return f"✅ 予定「{event['event_name']}」を削除しました。"
 
 
@@ -2822,17 +2950,17 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
 async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
     """予定編集処理（interactionベース → 共通ロジックに委譲）"""
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-    return await _handle_edit_event_direct(bot, guild_id, parsed)
+    return await _handle_edit_event_direct(bot, guild_id, parsed, user_id=str(interaction.user.id))
 
 async def handle_delete_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
     """予定削除処理（interactionベース → 共通ロジックに委譲）"""
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-    return await _handle_delete_event_direct(bot, guild_id, parsed)
+    return await _handle_delete_event_direct(bot, guild_id, parsed, user_id=str(interaction.user.id))
 
 async def handle_skip_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
     """予定スキップ処理（interactionベース → 共通ロジックに委譲）"""
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-    return await _handle_skip_event_direct(bot, guild_id, parsed)
+    return await _handle_skip_event_direct(bot, guild_id, parsed, user_id=str(interaction.user.id))
 
 async def handle_search_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> Optional[str]:
     """予定検索処理"""
