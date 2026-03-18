@@ -2930,25 +2930,6 @@ async def _handle_add_event_direct(
         monthly_dates=monthly_dates,
     )
 
-    # 変更履歴を記録
-    bot.db_manager.add_event_history(
-        guild_id=guild_id,
-        event_id=event_id,
-        event_name=parsed['event_name'],
-        action="add",
-        changed_by=str(user_id),
-        changes={
-            "summary": "新規登録",
-            "fields": {
-                "recurrence": parsed['recurrence'],
-                "weekday": parsed.get('weekday'),
-                "time": parsed.get('time'),
-                "duration_minutes": parsed.get('duration_minutes', 60),
-                "tags": tags,
-            },
-        },
-    )
-
     if not calendar_owner:
         return "❌ カレンダーが未認証です。`/カレンダー 認証` を実行してください。"
 
@@ -2992,6 +2973,24 @@ async def _handle_add_event_direct(
             [{"event_id": google_event_id, "rrule": rrule}]
         )
 
+        bot.db_manager.add_event_history(
+            guild_id=guild_id,
+            event_id=event_id,
+            event_name=parsed['event_name'],
+            action="add",
+            changed_by=str(user_id),
+            changes={
+                "summary": "新規登録",
+                "fields": {
+                    "recurrence": parsed['recurrence'],
+                    "weekday": parsed.get('weekday'),
+                    "time": parsed.get('time'),
+                    "duration_minutes": parsed.get('duration_minutes', 60),
+                    "tags": tags,
+                },
+            },
+        )
+
         return (
             f"✅ 予定を登録しました！\n"
             f"📅 {parsed['event_name']}\n"
@@ -3000,6 +2999,24 @@ async def _handle_add_event_direct(
             f"📌 次回: {start_dt.strftime('%Y-%m-%d')}"
         )
     else:
+        bot.db_manager.add_event_history(
+            guild_id=guild_id,
+            event_id=event_id,
+            event_name=parsed['event_name'],
+            action="add",
+            changed_by=str(user_id),
+            changes={
+                "summary": "新規登録",
+                "fields": {
+                    "recurrence": parsed['recurrence'],
+                    "weekday": parsed.get('weekday'),
+                    "time": parsed.get('time'),
+                    "duration_minutes": parsed.get('duration_minutes', 60),
+                    "tags": tags,
+                },
+            },
+        )
+
         return (
             f"✅ 不定期予定を登録しました！\n"
             f"📅 {parsed['event_name']}\n"
@@ -3213,7 +3230,10 @@ async def _handle_edit_event_direct(
 
     bot.db_manager.update_event(event['id'], updates)
 
-    # 変更履歴を記録（before/after形式）
+    result = _sync_google_calendar_edit(bot, guild_id, event, parsed, updates, cal_owner)
+    if result and result.startswith("❌"):
+        return result
+
     change_fields = {}
     for key, new_val in updates.items():
         if key in ('start_date',):
@@ -3230,10 +3250,6 @@ async def _handle_edit_event_direct(
         changed_by=user_id,
         changes={"summary": "予定を編集", "fields": change_fields},
     )
-
-    result = _sync_google_calendar_edit(bot, guild_id, event, parsed, updates, cal_owner)
-    if result and result.startswith("❌"):
-        return result
 
     msg = f"✅ 予定「{event['event_name']}」を更新しました。"
     if result:

@@ -227,7 +227,7 @@ def run_discord_bot():
 
             if not discord_bot_token:
                 print("FATAL: DISCORD_BOT_TOKEN is not set. Bot cannot start.", file=sys.stderr)
-                sys.exit(1)
+                os._exit(1)
             await bot.start(discord_bot_token)
 
     try:
