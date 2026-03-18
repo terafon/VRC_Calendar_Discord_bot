@@ -142,19 +142,14 @@ class CalendarBot(commands.Bot):
         active_events = self.db_manager.get_all_active_events(guild_id)
         events = []
         for e in active_events:
-            event_tags = e.get('tags')
-            if isinstance(event_tags, str):
-                try:
-                    event_tags = json.loads(event_tags)
-                except (json.JSONDecodeError, TypeError):
-                    event_tags = []
+            event_tags = _parse_json_field(e.get('tags'))
             event_info = {
                 "event_name": e.get('event_name'),
                 "recurrence": e.get('recurrence'),
                 "weekday": e.get('weekday'),
                 "time": e.get('time'),
                 "duration_minutes": e.get('duration_minutes'),
-                "tags": event_tags or [],
+                "tags": event_tags,
                 "description": e.get('description', ''),
                 "color_name": e.get('color_name', ''),
                 "x_url": e.get('x_url', ''),
@@ -921,7 +916,7 @@ def setup_commands(bot: CalendarBot):
         if tags_in_group:
             all_events = bot.db_manager.get_all_active_events(guild_id)
             for event in all_events:
-                event_tags = json.loads(event.get('tags') or '[]')
+                event_tags = _parse_json_field(event.get('tags'))
                 if not any(t in tags_in_group for t in event_tags):
                     continue
                 if not event.get('google_calendar_events'):
@@ -938,7 +933,7 @@ def setup_commands(bot: CalendarBot):
                     vrc_group_url=event.get('vrc_group_url'),
                     official_url=event.get('official_url'),
                 )
-                google_cal_data = json.loads(event['google_calendar_events'])
+                google_cal_data = _parse_json_field(event.get('google_calendar_events'))
                 ids = [ge['event_id'] for ge in google_cal_data]
                 try:
                     cal_mgr.update_events(ids, {'description': new_desc})
@@ -974,7 +969,7 @@ def setup_commands(bot: CalendarBot):
             tags_list = bot.db_manager.list_tags(guild_id)
             updated_count = 0
             for event in all_events:
-                old_tags = json.loads(event.get('tags') or '[]')
+                old_tags = _parse_json_field(event.get('tags'))
                 new_tags = [t for t in old_tags if t not in tags_in_group]
                 if old_tags != new_tags:
                     bot.db_manager.update_event(event['id'], {'tags': new_tags})
@@ -991,7 +986,7 @@ def setup_commands(bot: CalendarBot):
                                 vrc_group_url=event.get('vrc_group_url'),
                                 official_url=event.get('official_url'),
                             )
-                            google_cal_data = json.loads(event['google_calendar_events'])
+                            google_cal_data = _parse_json_field(event.get('google_calendar_events'))
                             ids = [ge['event_id'] for ge in google_cal_data]
                             try:
                                 cal_mgr.update_events(ids, {
@@ -1036,7 +1031,7 @@ def setup_commands(bot: CalendarBot):
         tags_list = bot.db_manager.list_tags(guild_id)
         updated_count = 0
         for event in affected:
-            old_tags = json.loads(event.get('tags') or '[]')
+            old_tags = _parse_json_field(event.get('tags'))
             new_tags = [t for t in old_tags if t != 名前]
             bot.db_manager.update_event(event['id'], {'tags': new_tags})
 
@@ -1053,7 +1048,7 @@ def setup_commands(bot: CalendarBot):
                         vrc_group_url=event.get('vrc_group_url'),
                         official_url=event.get('official_url'),
                     )
-                    google_cal_data = json.loads(event['google_calendar_events'])
+                    google_cal_data = _parse_json_field(event.get('google_calendar_events'))
                     ids = [ge['event_id'] for ge in google_cal_data]
                     try:
                         cal_mgr.update_events(ids, {
@@ -1455,7 +1450,7 @@ async def _batch_update_google_calendar_events(
         cal_mgr = bot.get_calendar_manager_for_user(int(guild_id), cal_owner)
         if not cal_mgr:
             continue
-        google_cal_data = json.loads(event['google_calendar_events'])
+        google_cal_data = _parse_json_field(event.get('google_calendar_events'))
         google_event_ids = [ge['event_id'] for ge in google_cal_data]
         try:
             cal_mgr.update_events(google_event_ids, google_updates)
@@ -2043,7 +2038,7 @@ class ColorSetupView(discord.ui.View):
                 if event.get('google_calendar_events'):
                     cal_mgr = self.bot.get_calendar_manager_for_user(int(self.guild_id), self.target_user_id)
                     if cal_mgr:
-                        google_cal_data = json.loads(event['google_calendar_events'])
+                        google_cal_data = _parse_json_field(event.get('google_calendar_events'))
                         ids = [ge['event_id'] for ge in google_cal_data]
                         try:
                             cal_mgr.update_events(ids, {'colorId': auto_color['color_id']})
@@ -2520,7 +2515,7 @@ def _sync_google_calendar_edit(
     if not event.get('google_calendar_events'):
         return None
 
-    google_cal_data = json.loads(event['google_calendar_events'])
+    google_cal_data = _parse_json_field(event.get('google_calendar_events'))
     google_event_ids = [ge['event_id'] for ge in google_cal_data]
 
     structural_change = any(k in parsed for k in ('recurrence', 'time', 'weekday', 'nth_weeks', 'monthly_dates', 'duration_minutes', 'start_date'))
@@ -2542,9 +2537,7 @@ def _sync_google_calendar_edit(
                 pass
 
         # 新しいRRULEで再作成
-        new_nth_weeks = parsed.get('nth_weeks') or (
-            json.loads(event['nth_weeks']) if event.get('nth_weeks') else []
-        )
+        new_nth_weeks = parsed.get('nth_weeks') or _parse_json_field(event.get('nth_weeks'))
         new_monthly_dates = parsed.get('monthly_dates') or (
             json.loads(event['monthly_dates']) if event.get('monthly_dates') else None
         )
@@ -2559,9 +2552,7 @@ def _sync_google_calendar_edit(
             preset = bot.db_manager.get_color_preset(guild_id, cal_owner, color_name)
             color_id = preset['color_id'] if preset else None
 
-        edit_tags = updates.get('tags') if 'tags' in updates else (
-            json.loads(event['tags']) if event.get('tags') else []
-        )
+        edit_tags = updates.get('tags') if 'tags' in updates else _parse_json_field(event.get('tags'))
         raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
         cal_description = _build_event_description(
             raw_description=raw_desc,
@@ -2610,9 +2601,7 @@ def _sync_google_calendar_edit(
         if 'event_name' in parsed: google_updates['summary'] = parsed['event_name']
         if 'description' in parsed or any(k in updates for k in ('x_url', 'vrc_group_url', 'official_url', 'tags')):
             raw_desc = parsed.get('description') if 'description' in parsed else event.get('description', '')
-            edit_tags = updates.get('tags') if 'tags' in updates else (
-                json.loads(event['tags']) if event.get('tags') else []
-            )
+            edit_tags = updates.get('tags') if 'tags' in updates else _parse_json_field(event.get('tags'))
             google_updates['description'] = _build_event_description(
                 raw_description=raw_desc,
                 tags=edit_tags if edit_tags else None,
@@ -3351,7 +3340,7 @@ def create_weekly_embed(events: List[Dict[str, Any]]) -> discord.Embed:
         event_lines = []
         for evt in day_events:
             time_str = evt['time'] if evt['time'] else '時刻未定'
-            tags = json.loads(evt['tags']) if isinstance(evt['tags'], str) else evt['tags']
+            tags = _parse_json_field(evt.get('tags'))
             tags_str = f" [{', '.join(tags)}]" if tags else ""
             event_lines.append(f"⏰ {time_str} - {evt['event_name']}{tags_str}")
 
@@ -3376,12 +3365,7 @@ def create_irregular_events_embed(events: list) -> discord.Embed:
         name = event.get("event_name") or event.get("name", "不明")
         weekday = event.get("weekday")
         weekday_str = f"（主に{WEEKDAY_LABELS[weekday]}曜）" if isinstance(weekday, int) and 0 <= weekday <= 6 else ""
-        tags_raw = event.get("tags", [])
-        if isinstance(tags_raw, str):
-            try:
-                tags_raw = json.loads(tags_raw)
-            except (json.JSONDecodeError, TypeError):
-                tags_raw = []
+        tags_raw = _parse_json_field(event.get("tags"))
         tag_str = " ".join(f"`{t}`" for t in tags_raw) if tags_raw else ""
         time_str = event.get("time", "")
         value_parts = []
@@ -3431,7 +3415,7 @@ def create_event_list_embed(events: List[Dict[str, Any]]) -> discord.Embed:
 
         time_str = event['time'] if event['time'] else '時刻未定'
 
-        tags = json.loads(event['tags']) if isinstance(event['tags'], str) else event['tags']
+        tags = _parse_json_field(event.get('tags'))
         tags_str = f"\n🏷️ {', '.join(tags)}" if tags else ""
 
         embed.add_field(
@@ -3692,7 +3676,7 @@ def _rebuild_expected_event(
     bot: CalendarBot, guild_id: str, event: Dict[str, Any], cal_owner: str
 ) -> Dict[str, Any]:
     """Firestoreイベントデータから「Google Calendarイベントのあるべき姿」を構築する"""
-    tags = json.loads(event.get('tags') or '[]')
+    tags = _parse_json_field(event.get('tags'))
     tag_groups = bot.db_manager.list_tag_groups(guild_id)
 
     description = _build_event_description(
@@ -3740,7 +3724,7 @@ def _recreate_calendar_event(
         if weekday is None or not time_str:
             return None
 
-    nth_weeks = json.loads(event['nth_weeks']) if event.get('nth_weeks') else []
+    nth_weeks = _parse_json_field(event.get('nth_weeks'))
 
     expected = _rebuild_expected_event(bot, guild_id, event, cal_owner)
 
@@ -3751,7 +3735,7 @@ def _recreate_calendar_event(
         if preset:
             color_id = preset['color_id']
 
-    tags = json.loads(event.get('tags') or '[]')
+    tags = _parse_json_field(event.get('tags'))
 
     try:
         rrule = RecurrenceCalculator.to_rrule(
