@@ -998,6 +998,18 @@ def setup_commands(bot: CalendarBot):
             super().__init__(timeout=300)
             self.author_id = author_id
             self.confirmed = False
+            self.message: Optional[discord.Message] = None
+
+        async def on_timeout(self):
+            if self.message:
+                try:
+                    await self.message.edit(
+                        content="⏰ インポート確認がタイムアウトしました。もう一度やり直してください。",
+                        view=None,
+                        embed=None,
+                    )
+                except Exception:
+                    pass
 
         @discord.ui.button(label="インポート実行", style=discord.ButtonStyle.green, emoji="📥")
         async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1087,7 +1099,7 @@ def setup_commands(bot: CalendarBot):
         embed.set_footer(text=f"✅ {len(valid)} 件登録予定 / ⚠️ {len(skipped)} 件スキップ")
 
         view = ImportConfirmView(author_id=interaction.user.id)
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True, wait=True)
 
         await view.wait()
         if not view.confirmed:
@@ -3049,22 +3061,6 @@ def _sync_google_calendar_edit(
 
     delete_warnings = ""
     if structural_change and new_recurrence != 'irregular':
-        # 旧イベントを削除
-        delete_failures = []
-        for ge in google_cal_data:
-            try:
-                cal_mgr.service.events().delete(
-                    calendarId=cal_mgr.calendar_id, eventId=ge['event_id']
-                ).execute()
-            except Exception as e:
-                # 404 (Not Found) は既に削除済みなので無視
-                if "404" not in str(e):
-                    delete_failures.append(ge['event_id'])
-                    print(f"[Calendar edit] Failed to delete old event {ge['event_id']}: {e}")
-        if delete_failures:
-            delete_warnings = f"\n⚠️ 旧カレンダーイベント {len(delete_failures)} 件の削除に失敗しました。手動で削除が必要な場合があります。"
-
-        # 新しいRRULEで再作成
         new_nth_weeks = parsed.get('nth_weeks') or _parse_json_field(event.get('nth_weeks'))
         new_monthly_dates = parsed.get('monthly_dates') or (
             json.loads(event['monthly_dates']) if event.get('monthly_dates') else None
@@ -3108,6 +3104,21 @@ def _sync_google_calendar_edit(
                 monthly_dates=new_monthly_dates,
             )
         end_dt = start_dt + timedelta(minutes=new_duration)
+
+        # 旧イベントを削除
+        delete_failures = []
+        for ge in google_cal_data:
+            try:
+                cal_mgr.service.events().delete(
+                    calendarId=cal_mgr.calendar_id, eventId=ge['event_id']
+                ).execute()
+            except Exception as e:
+                # 404 (Not Found) は既に削除済みなので無視
+                if "404" not in str(e):
+                    delete_failures.append(ge['event_id'])
+                    print(f"[Calendar edit] Failed to delete old event {ge['event_id']}: {e}")
+        if delete_failures:
+            delete_warnings = f"\n⚠️ 旧カレンダーイベント {len(delete_failures)} 件の削除に失敗しました。手動で削除が必要な場合があります。"
 
         google_event_id = cal_mgr.create_recurring_event(
             summary=new_event_name,
@@ -3228,11 +3239,11 @@ async def _handle_edit_event_direct(
     if 'official_url' in parsed:
         updates['official_url'] = parsed.get('official_url') or None
 
-    bot.db_manager.update_event(event['id'], updates)
-
     result = _sync_google_calendar_edit(bot, guild_id, event, parsed, updates, cal_owner)
     if result and result.startswith("❌"):
         return result
+
+    bot.db_manager.update_event(event['id'], updates)
 
     change_fields = {}
     for key, new_val in updates.items():
