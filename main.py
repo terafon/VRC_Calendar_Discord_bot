@@ -221,12 +221,12 @@ def run_discord_bot():
     bot_loop = loop
 
     async def runner():
-            async with bot:
-                # on_readyが呼ばれたらbot_readyをセット
-                @bot.event
-                async def on_ready():
-                    print(f'Logged in as {bot.user}')
-                    bot_ready.set()
+        async with bot:
+            # on_readyが呼ばれたらbot_readyをセット
+            @bot.event
+            async def on_ready():
+                print(f'Logged in as {bot.user}')
+                bot_ready.set()
             await bot.start(discord_bot_token)
 
     try:
