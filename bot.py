@@ -934,12 +934,14 @@ def setup_commands(bot: CalendarBot):
                     official_url=event.get('official_url'),
                 )
                 google_cal_data = _parse_json_field(event.get('google_calendar_events'))
+                if not google_cal_data:
+                    continue
                 ids = [ge['event_id'] for ge in google_cal_data]
                 try:
                     cal_mgr.update_events(ids, {'description': new_desc})
+                    updated_count += 1
                 except Exception:
                     pass
-                updated_count += 1
 
         msg = f"✅ タググループ「{old_name}」を「{新しい名前}」に変更しました。"
         if updated_count:
@@ -987,14 +989,15 @@ def setup_commands(bot: CalendarBot):
                                 official_url=event.get('official_url'),
                             )
                             google_cal_data = _parse_json_field(event.get('google_calendar_events'))
-                            ids = [ge['event_id'] for ge in google_cal_data]
-                            try:
-                                cal_mgr.update_events(ids, {
-                                    'description': new_desc,
-                                    'extendedProperties': {'private': {'tags': json.dumps(new_tags, ensure_ascii=False)}},
-                                })
-                            except Exception:
-                                pass
+                            if google_cal_data:
+                                ids = [ge['event_id'] for ge in google_cal_data]
+                                try:
+                                    cal_mgr.update_events(ids, {
+                                        'description': new_desc,
+                                        'extendedProperties': {'private': {'tags': json.dumps(new_tags, ensure_ascii=False)}},
+                                    })
+                                except Exception:
+                                    pass
                     updated_count += 1
             msg = f"✅ タググループID {id} を削除しました。"
             if updated_count:
