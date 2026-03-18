@@ -965,10 +965,18 @@ def setup_commands(bot: CalendarBot):
                     or any(not isinstance(day, int) or not (1 <= day <= 31) for day in monthly_dates)
                 ):
                     reasons.append(f"monthly_dates が不正: {monthly_dates}")
-            if recurrence not in ('irregular', 'monthly_date') and ev.get('weekday') is None:
+            weekday = ev.get('weekday')
+            if recurrence not in ('irregular', 'monthly_date') and weekday is None:
                 reasons.append("weekday が未指定")
-            elif ev.get('weekday') is not None and not (0 <= ev['weekday'] <= 6):
-                reasons.append(f"weekday が範囲外: {ev['weekday']}")
+            elif weekday is not None:
+                if not isinstance(weekday, int):
+                    try:
+                        ev['weekday'] = int(weekday)
+                        weekday = ev['weekday']
+                    except (ValueError, TypeError):
+                        reasons.append(f"weekday が数値ではありません: {weekday}")
+                if isinstance(weekday, int) and not (0 <= weekday <= 6):
+                    reasons.append(f"weekday が範囲外: {weekday}")
             time_str = ev.get('time', '')
             if time_str:
                 try:
@@ -978,7 +986,14 @@ def setup_commands(bot: CalendarBot):
                 except (ValueError, TypeError):
                     reasons.append(f"time のフォーマットが不正: {time_str}")
             dur = ev.get('duration_minutes', 60)
-            if not (1 <= dur <= 1440):
+            if not isinstance(dur, int):
+                try:
+                    dur = int(dur)
+                    ev['duration_minutes'] = dur
+                except (ValueError, TypeError):
+                    reasons.append(f"duration_minutes が数値ではありません: {dur}")
+                    dur = None
+            if dur is not None and not (1 <= dur <= 1440):
                 reasons.append(f"duration_minutes が範囲外: {dur}")
 
             if reasons:

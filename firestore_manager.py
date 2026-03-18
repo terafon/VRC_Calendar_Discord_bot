@@ -869,8 +869,11 @@ class FirestoreManager:
             "changes": json.dumps(changes, ensure_ascii=False),
         }
         _, ref = self._guild_ref(guild_id).collection("event_history").add(data)
-        # 古い履歴を自動クリーンアップ（イベントごとに100件まで保持）
-        self.cleanup_old_history(guild_id, event_id, keep_count=100)
+        # 古い履歴を自動クリーンアップ（ベストエフォート）
+        try:
+            self.cleanup_old_history(guild_id, event_id, keep_count=100)
+        except Exception as e:
+            print(f"[event_history] cleanup failed for event {event_id}: {e}")
         return ref.id
 
     def get_event_history(
@@ -887,20 +890,29 @@ class FirestoreManager:
         return [doc.to_dict() for doc in query.get()]
 
     def cleanup_old_history(self, guild_id: str, event_id: int, keep_count: int = 100):
-        """イベントごとの履歴を keep_count 件に制限し、古いものをバッチ削除"""
-        docs = (
-            self._guild_ref(guild_id).collection("event_history")
+        """イベントごとの履歴を keep_count 件に制限し、古いものをバッチ削除
+
+        keep_count 件目をカーソルとして取得し、それより古いドキュメントを
+        start_after で取得して削除する（offset の読み取り課金を回避）。
+        """
+        collection = self._guild_ref(guild_id).collection("event_history")
+        base_query = (
+            collection
             .where(filter=firestore.FieldFilter("event_id", "==", event_id))
             .order_by("changed_at", direction=firestore.Query.DESCENDING)
-            .offset(keep_count)
-            .get()
         )
-        docs_list = list(docs)
-        if not docs_list:
+        # keep_count 件目のドキュメントをカーソルとして取得
+        cursor_docs = list(base_query.limit(keep_count).get())
+        if len(cursor_docs) < keep_count:
+            return  # keep_count 未満なら削除不要
+
+        last_doc = cursor_docs[-1]
+        # カーソル以降の古いドキュメントを取得して削除
+        old_docs = list(base_query.start_after(last_doc).get())
+        if not old_docs:
             return
-        # WriteBatch で最大500件ずつ削除
-        for i in range(0, len(docs_list), 500):
+        for i in range(0, len(old_docs), 500):
             batch = self.db.batch()
-            for doc in docs_list[i:i + 500]:
+            for doc in old_docs[i:i + 500]:
                 batch.delete(doc.reference)
             batch.commit()
