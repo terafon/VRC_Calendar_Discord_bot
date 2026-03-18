@@ -219,7 +219,7 @@ class CalendarBot(commands.Bot):
     @tasks.loop(minutes=1)
     async def cleanup_sessions(self):
         """期限切れの会話セッションを定期的にクリーンアップ"""
-        expired_thread_ids = self.conversation_manager.cleanup_expired()
+        expired_thread_ids = await self.conversation_manager.cleanup_expired()
         for thread_id in expired_thread_ids:
             try:
                 thread = await self.fetch_channel(thread_id)
@@ -467,7 +467,7 @@ def setup_commands(bot: CalendarBot):
                 )
 
                 # セッションを登録
-                session = bot.conversation_manager.create_session(
+                session = await bot.conversation_manager.create_session(
                     guild_id=guild_id,
                     channel_id=interaction.channel_id,
                     thread_id=thread.id,
@@ -547,7 +547,7 @@ def setup_commands(bot: CalendarBot):
             return
 
         thread = message.channel
-        session = bot.conversation_manager.get_session(thread.id)
+        session = await bot.conversation_manager.get_session(thread.id)
 
         if not session:
             return
@@ -560,7 +560,7 @@ def setup_commands(bot: CalendarBot):
 
         # キャンセルチェック
         if message.content.strip() in CANCEL_KEYWORDS:
-            bot.conversation_manager.remove_session(thread.id)
+            await bot.conversation_manager.remove_session(thread.id)
             await thread.send("❌ セッションをキャンセルしました。")
             await thread.edit(archived=True)
             return
@@ -606,7 +606,7 @@ def setup_commands(bot: CalendarBot):
 
                 if should_end_session:
                     # セッション終了 → アーカイブ
-                    bot.conversation_manager.remove_session(thread.id)
+                    await bot.conversation_manager.remove_session(thread.id)
                     try:
                         await thread.edit(archived=True)
                     except Exception:
@@ -913,6 +913,7 @@ def setup_commands(bot: CalendarBot):
         tags_in_group = [t['name'] for t in tags_list if t.get('group_id') == id]
 
         updated_count = 0
+        failed_count = 0
         if tags_in_group:
             all_events = bot.db_manager.get_all_active_events(guild_id)
             for event in all_events:
@@ -940,12 +941,15 @@ def setup_commands(bot: CalendarBot):
                 try:
                     cal_mgr.update_events(ids, {'description': new_desc})
                     updated_count += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    failed_count += 1
+                    print(f"[Calendar sync] Failed to update events for {event.get('event_name')}: {e}")
 
         msg = f"✅ タググループ「{old_name}」を「{新しい名前}」に変更しました。"
         if updated_count:
             msg += f"\n📝 {updated_count} 件の予定の説明欄を更新しました。"
+        if failed_count:
+            msg += f"\n⚠️ {failed_count} 件のカレンダー更新に失敗しました。次回の自動同期で修復されます。"
         await interaction.followup.send(msg, ephemeral=True)
 
     @tag_group.command(name="グループ削除", description="タググループを削除します")
@@ -970,6 +974,7 @@ def setup_commands(bot: CalendarBot):
             tag_groups = bot.db_manager.list_tag_groups(guild_id)
             tags_list = bot.db_manager.list_tags(guild_id)
             updated_count = 0
+            failed_count = 0
             for event in all_events:
                 old_tags = _parse_json_field(event.get('tags'))
                 new_tags = [t for t in old_tags if t not in tags_in_group]
@@ -996,12 +1001,15 @@ def setup_commands(bot: CalendarBot):
                                         'description': new_desc,
                                         'extendedProperties': {'private': {'tags': json.dumps(new_tags, ensure_ascii=False)}},
                                     })
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    failed_count += 1
+                                    print(f"[Calendar sync] Failed to update events for {event.get('event_name')}: {e}")
                     updated_count += 1
             msg = f"✅ タググループID {id} を削除しました。"
             if updated_count:
                 msg += f"\n📝 {updated_count} 件の予定からタグを除去しました。"
+            if failed_count:
+                msg += f"\n⚠️ {failed_count} 件のカレンダー更新に失敗しました。次回の自動同期で修復されます。"
             await interaction.followup.send(msg, ephemeral=True)
         else:
             await interaction.followup.send(f"✅ タググループID {id} を削除しました。", ephemeral=True)
@@ -1033,6 +1041,7 @@ def setup_commands(bot: CalendarBot):
         tag_groups = bot.db_manager.list_tag_groups(guild_id)
         tags_list = bot.db_manager.list_tags(guild_id)
         updated_count = 0
+        failed_count = 0
         for event in affected:
             old_tags = _parse_json_field(event.get('tags'))
             new_tags = [t for t in old_tags if t != 名前]
@@ -1058,13 +1067,16 @@ def setup_commands(bot: CalendarBot):
                             'description': new_desc,
                             'extendedProperties': {'private': {'tags': json.dumps(new_tags, ensure_ascii=False)}},
                         })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        failed_count += 1
+                        print(f"[Calendar sync] Failed to update events for {event.get('event_name')}: {e}")
             updated_count += 1
 
         msg = f"✅ タグ「{名前}」を削除しました。"
         if updated_count:
             msg += f"\n📝 {updated_count} 件の予定からタグを除去しました。"
+        if failed_count:
+            msg += f"\n⚠️ {failed_count} 件のカレンダー更新に失敗しました。次回の自動同期で修復されます。"
         await interaction.followup.send(msg, ephemeral=True)
 
     bot.tree.add_command(tag_group)
@@ -2529,15 +2541,22 @@ def _sync_google_calendar_edit(
 
     new_recurrence = parsed.get('recurrence', event.get('recurrence'))
 
+    delete_warnings = ""
     if structural_change and new_recurrence != 'irregular':
         # 旧イベントを削除
+        delete_failures = []
         for ge in google_cal_data:
             try:
                 cal_mgr.service.events().delete(
                     calendarId=cal_mgr.calendar_id, eventId=ge['event_id']
                 ).execute()
-            except Exception:
-                pass
+            except Exception as e:
+                # 404 (Not Found) は既に削除済みなので無視
+                if "404" not in str(e):
+                    delete_failures.append(ge['event_id'])
+                    print(f"[Calendar edit] Failed to delete old event {ge['event_id']}: {e}")
+        if delete_failures:
+            delete_warnings = f"\n⚠️ 旧カレンダーイベント {len(delete_failures)} 件の削除に失敗しました。手動で削除が必要な場合があります。"
 
         # 新しいRRULEで再作成
         new_nth_weeks = parsed.get('nth_weeks') or _parse_json_field(event.get('nth_weeks'))
@@ -2568,9 +2587,14 @@ def _sync_google_calendar_edit(
         rrule = RecurrenceCalculator.to_rrule(new_recurrence, new_nth_weeks, new_weekday or 0, monthly_dates=new_monthly_dates)
         # start_date が指定されていれば使用、なければ従来通り計算
         if parsed.get('start_date'):
-            hour, minute = map(int, new_time.split(':'))
-            sd = datetime.strptime(parsed['start_date'], '%Y-%m-%d')
-            start_dt = sd.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            try:
+                hour, minute = map(int, new_time.split(':'))
+                if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                    raise ValueError(f"時刻が範囲外です: {new_time}")
+                sd = datetime.strptime(parsed['start_date'], '%Y-%m-%d')
+                start_dt = sd.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            except (ValueError, TypeError) as e:
+                return f"❌ 日付または時刻のフォーマットが不正です: {e}"
         else:
             start_dt = _next_weekday_datetime(
                 new_weekday, new_time,
@@ -2637,7 +2661,7 @@ def _sync_google_calendar_edit(
                 google_updates['extendedProperties'] = {'private': bot_ext}
             cal_mgr.update_events(google_event_ids, google_updates)
 
-    return None
+    return delete_warnings if delete_warnings else None
 
 
 async def _handle_edit_event_direct(
@@ -2699,11 +2723,14 @@ async def _handle_edit_event_direct(
 
     bot.db_manager.update_event(event['id'], updates)
 
-    error = _sync_google_calendar_edit(bot, guild_id, event, parsed, updates, cal_owner)
-    if error:
-        return error
+    result = _sync_google_calendar_edit(bot, guild_id, event, parsed, updates, cal_owner)
+    if result and result.startswith("❌"):
+        return result
 
-    return f"✅ 予定「{event['event_name']}」を更新しました。"
+    msg = f"✅ 予定「{event['event_name']}」を更新しました。"
+    if result:
+        msg += result
+    return msg
 
 
 async def _handle_skip_event_direct(

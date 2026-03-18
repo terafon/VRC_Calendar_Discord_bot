@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import threading
 from flask import Flask, request
@@ -225,8 +226,8 @@ def run_discord_bot():
                 bot_ready.set()
 
             if not discord_bot_token:
-                print("ERROR: DISCORD_BOT_TOKEN is not set. Bot cannot start.")
-                return
+                print("FATAL: DISCORD_BOT_TOKEN is not set. Bot cannot start.", file=sys.stderr)
+                sys.exit(1)
             await bot.start(discord_bot_token)
 
     try:
