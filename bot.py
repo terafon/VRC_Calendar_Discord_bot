@@ -947,6 +947,24 @@ def setup_commands(bot: CalendarBot):
             recurrence = ev.get('recurrence', '')
             if recurrence not in VALID_RECURRENCES:
                 reasons.append(f"recurrence が不正: '{recurrence}'")
+            nth_weeks = ev.get('nth_weeks')
+            if recurrence == 'nth_week':
+                if not nth_weeks:
+                    reasons.append("nth_weeks が未指定")
+                elif (
+                    not isinstance(nth_weeks, list)
+                    or any(not isinstance(week, int) or not (1 <= week <= 5) for week in nth_weeks)
+                ):
+                    reasons.append(f"nth_weeks が不正: {nth_weeks}")
+            monthly_dates = ev.get('monthly_dates')
+            if recurrence == 'monthly_date':
+                if not monthly_dates:
+                    reasons.append("monthly_dates が未指定")
+                elif (
+                    not isinstance(monthly_dates, list)
+                    or any(not isinstance(day, int) or not (1 <= day <= 31) for day in monthly_dates)
+                ):
+                    reasons.append(f"monthly_dates が不正: {monthly_dates}")
             if recurrence not in ('irregular', 'monthly_date') and ev.get('weekday') is None:
                 reasons.append("weekday が未指定")
             elif ev.get('weekday') is not None and not (0 <= ev['weekday'] <= 6):
