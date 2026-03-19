@@ -735,7 +735,7 @@ def setup_commands(bot: CalendarBot):
             else:
                 changes = changes_raw
 
-            summary = changes.get('summary', '')
+            summary = changes.get('summary', '')[:200]
             user_mention = f"<@{changed_by}>" if changed_by else "不明"
 
             field_value = f"👤 {user_mention} | {changed_at} UTC\n📝 {summary}"
@@ -745,12 +745,18 @@ def setup_commands(bot: CalendarBot):
                 details = []
                 for key, val in changes["fields"].items():
                     if isinstance(val, dict) and "before" in val and "after" in val:
-                        details.append(f"  {key}: {val['before']} → {val['after']}")
+                        before_str = str(val['before'])[:80]
+                        after_str = str(val['after'])[:80]
+                        details.append(f"  {key}: {before_str} → {after_str}")
                 if details:
                     field_value += "\n" + "\n".join(details[:5])
 
+            # Discord Embed フィールド制限: name=256文字, value=1024文字
+            field_name = f"{icon} [{label}] {event_name}"[:256]
+            field_value = field_value[:1024]
+
             embed.add_field(
-                name=f"{icon} [{label}] {event_name}",
+                name=field_name,
                 value=field_value,
                 inline=False,
             )

@@ -882,12 +882,24 @@ class FirestoreManager:
         event_id: Optional[int] = None,
         limit: int = 20,
     ) -> List[dict]:
-        """イベント変更履歴を取得（新しい順）"""
-        query = self._guild_ref(guild_id).collection("event_history")
-        if event_id is not None:
-            query = query.where(filter=firestore.FieldFilter("event_id", "==", event_id))
-        query = query.order_by("changed_at", direction=firestore.Query.DESCENDING).limit(limit)
-        return [doc.to_dict() for doc in query.get()]
+        """イベント変更履歴を取得（新しい順）
+
+        注意: event_id 指定時は event_id + changed_at の複合インデックスが必要。
+        Firestore コンソールまたは firestore.indexes.json で作成すること。
+        """
+        try:
+            query = self._guild_ref(guild_id).collection("event_history")
+            if event_id is not None:
+                query = query.where(filter=firestore.FieldFilter("event_id", "==", event_id))
+            query = query.order_by("changed_at", direction=firestore.Query.DESCENDING).limit(limit)
+            return [doc.to_dict() for doc in query.get()]
+        except Exception as e:
+            error_msg = str(e)
+            if "index" in error_msg.lower() or "requires an index" in error_msg.lower():
+                print(f"[event_history] Composite index required. Please create it in Firestore console: {e}")
+            else:
+                print(f"[event_history] Failed to get history: {e}")
+            return []
 
     def cleanup_old_history(self, guild_id: str, event_id: int, keep_count: int = 100):
         """イベントごとの履歴を keep_count 件に制限し、古いものをバッチ削除
@@ -907,12 +919,17 @@ class FirestoreManager:
             return  # keep_count 未満なら削除不要
 
         last_doc = cursor_docs[-1]
-        # カーソル以降の古いドキュメントを取得して削除
-        old_docs = list(base_query.start_after(last_doc).get())
-        if not old_docs:
-            return
-        for i in range(0, len(old_docs), 500):
+        # カーソル以降の古いドキュメントを limit(500) でページングしながら削除
+        delete_query = base_query.start_after(last_doc).limit(500)
+        while True:
+            old_docs = list(delete_query.get())
+            if not old_docs:
+                break
             batch = self.db.batch()
-            for doc in old_docs[i:i + 500]:
+            for doc in old_docs:
                 batch.delete(doc.reference)
             batch.commit()
+            if len(old_docs) < 500:
+                break
+            # 次ページのカーソルを更新
+            delete_query = base_query.start_after(old_docs[-1]).limit(500)
