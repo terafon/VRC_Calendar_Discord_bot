@@ -7,7 +7,7 @@ import io
 import asyncio
 import calendar
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
 from nlp_processor import NLPProcessor
@@ -717,7 +717,7 @@ def setup_commands(bot: CalendarBot):
         ACTION_LABELS = {"add": "追加", "edit": "編集", "delete": "削除", "skip": "スキップ"}
 
         embed = discord.Embed(title="📋 予定変更履歴", color=0x5865F2)
-        for entry in history:
+        for entry in history[:25]:  # Discord Embed フィールド上限は25
             action = entry.get('action', '?')
             icon = ACTION_ICONS.get(action, "⚪")
             label = ACTION_LABELS.get(action, action)
@@ -814,7 +814,7 @@ def setup_commands(bot: CalendarBot):
 
         export_data = {
             "version": "1.0",
-            "exported_at": datetime.utcnow().isoformat() + "+00:00",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
             "guild_id": guild_id,
             "events": [],
         }
@@ -3269,7 +3269,11 @@ async def _handle_edit_event_direct(
     if result and result.startswith("❌"):
         return result
 
-    bot.db_manager.update_event(event['id'], updates)
+    try:
+        bot.db_manager.update_event(event['id'], updates)
+    except Exception as e:
+        print(f"[edit] Firestore update failed for event {event['id']}: {e}")
+        return f"❌ カレンダーは更新されましたが、データベースの更新に失敗しました: {e}"
 
     change_fields = {}
     for key, new_val in updates.items():
