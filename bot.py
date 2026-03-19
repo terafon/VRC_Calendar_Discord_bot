@@ -876,6 +876,15 @@ def setup_commands(bot: CalendarBot):
             filename = f"events_{guild_id}_{timestamp}.json"
             file_bytes = content.encode('utf-8')
 
+        # Discord添付ファイル上限チェック（通常サーバー: 25MB）
+        max_file_size = 25 * 1024 * 1024
+        if len(file_bytes) > max_file_size:
+            await interaction.followup.send(
+                f"❌ エクスポートファイルが大きすぎます（{len(file_bytes) // 1024}KB）。予定数を減らしてください。",
+                ephemeral=True,
+            )
+            return
+
         file = discord.File(io.BytesIO(file_bytes), filename=filename)
         await interaction.followup.send(f"📤 {len(events)} 件の予定をエクスポートしました。", file=file, ephemeral=True)
 
@@ -1064,6 +1073,15 @@ def setup_commands(bot: CalendarBot):
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
         if not interaction.guild_id:
             await interaction.followup.send("⚠️ このコマンドはサーバー内で使用してください。", ephemeral=True)
+            return
+
+        # ファイルサイズチェック（1MB上限）
+        max_import_size = 1 * 1024 * 1024
+        if ファイル.size and ファイル.size > max_import_size:
+            await interaction.followup.send(
+                f"❌ ファイルが大きすぎます（{ファイル.size // 1024}KB）。1MB以下のファイルを使用してください。",
+                ephemeral=True,
+            )
             return
 
         # ファイル読み込み
