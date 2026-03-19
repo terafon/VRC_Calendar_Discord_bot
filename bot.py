@@ -2,9 +2,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import json
+import csv
+import io
+import asyncio
 import calendar
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
 from nlp_processor import NLPProcessor
@@ -22,6 +25,14 @@ def _parse_json_field(value):
         except (json.JSONDecodeError, TypeError):
             return []
     return value if value is not None else []
+
+
+def _safe_add_event_history(db_manager, **kwargs):
+    """変更履歴をベストエフォートで記録（失敗してもコア処理に影響しない）"""
+    try:
+        db_manager.add_event_history(**kwargs)
+    except Exception as e:
+        print(f"[event_history] Failed to record history: {e}")
 
 
 RECURRENCE_TYPES = {
@@ -219,7 +230,7 @@ class CalendarBot(commands.Bot):
     @tasks.loop(minutes=1)
     async def cleanup_sessions(self):
         """期限切れの会話セッションを定期的にクリーンアップ"""
-        expired_thread_ids = self.conversation_manager.cleanup_expired()
+        expired_thread_ids = await self.conversation_manager.cleanup_expired()
         for thread_id in expired_thread_ids:
             try:
                 thread = await self.fetch_channel(thread_id)
@@ -467,7 +478,7 @@ def setup_commands(bot: CalendarBot):
                 )
 
                 # セッションを登録
-                session = bot.conversation_manager.create_session(
+                session = await bot.conversation_manager.create_session(
                     guild_id=guild_id,
                     channel_id=interaction.channel_id,
                     thread_id=thread.id,
@@ -547,7 +558,7 @@ def setup_commands(bot: CalendarBot):
             return
 
         thread = message.channel
-        session = bot.conversation_manager.get_session(thread.id)
+        session = await bot.conversation_manager.get_session(thread.id)
 
         if not session:
             return
@@ -560,7 +571,7 @@ def setup_commands(bot: CalendarBot):
 
         # キャンセルチェック
         if message.content.strip() in CANCEL_KEYWORDS:
-            bot.conversation_manager.remove_session(thread.id)
+            await bot.conversation_manager.remove_session(thread.id)
             await thread.send("❌ セッションをキャンセルしました。")
             await thread.edit(archived=True)
             return
@@ -606,7 +617,7 @@ def setup_commands(bot: CalendarBot):
 
                 if should_end_session:
                     # セッション終了 → アーカイブ
-                    bot.conversation_manager.remove_session(thread.id)
+                    await bot.conversation_manager.remove_session(thread.id)
                     try:
                         await thread.edit(archived=True)
                     except Exception:
@@ -678,6 +689,524 @@ def setup_commands(bot: CalendarBot):
         await interaction.response.defer(ephemeral=True)
         embed = create_help_embed()
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ---- 変更履歴コマンド ----
+    @bot.tree.command(name="履歴", description="予定の変更履歴を表示します")
+    @app_commands.describe(イベント名="特定のイベントに絞り込む場合に指定")
+    async def history_command(interaction: discord.Interaction, イベント名: str = None):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        if not interaction.guild_id:
+            await interaction.followup.send("⚠️ このコマンドはサーバー内で使用してください。", ephemeral=True)
+            return
+
+        event_id = None
+        if イベント名:
+            events = bot.db_manager.search_events_by_name(イベント名, guild_id)
+            if not events:
+                await interaction.followup.send(f"❌ 予定「{イベント名}」が見つかりませんでした。", ephemeral=True)
+                return
+            event_id = events[0]['id']
+
+        history = bot.db_manager.get_event_history(guild_id, event_id=event_id, limit=20)
+        if not history:
+            await interaction.followup.send("📭 変更履歴がありません。", ephemeral=True)
+            return
+
+        ACTION_ICONS = {"add": "🟢", "edit": "🟡", "delete": "🔴", "skip": "🟠"}
+        ACTION_LABELS = {"add": "追加", "edit": "編集", "delete": "削除", "skip": "スキップ"}
+
+        embed = discord.Embed(title="📋 予定変更履歴", color=0x5865F2)
+        for entry in history[:25]:  # Discord Embed フィールド上限は25
+            action = entry.get('action', '?')
+            icon = ACTION_ICONS.get(action, "⚪")
+            label = ACTION_LABELS.get(action, action)
+            event_name = entry.get('event_name', '不明')
+            changed_by = entry.get('changed_by', '')
+            changed_at = entry.get('changed_at', '')[:16].replace('T', ' ')
+
+            changes = {}
+            changes_raw = entry.get('changes', '{}')
+            if isinstance(changes_raw, str):
+                try:
+                    changes = json.loads(changes_raw)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            else:
+                changes = changes_raw
+
+            summary = changes.get('summary', '')[:200]
+            user_mention = f"<@{changed_by}>" if changed_by else "不明"
+
+            field_value = f"👤 {user_mention} | {changed_at} UTC\n📝 {summary}"
+
+            # 編集時は変更フィールドの詳細を表示
+            if action == "edit" and changes.get("fields"):
+                details = []
+                for key, val in changes["fields"].items():
+                    if isinstance(val, dict) and "before" in val and "after" in val:
+                        before_str = str(val['before'])[:80]
+                        after_str = str(val['after'])[:80]
+                        details.append(f"  {key}: {before_str} → {after_str}")
+                if details:
+                    field_value += "\n" + "\n".join(details[:5])
+
+            # Discord Embed フィールド制限: name=256文字, value=1024文字
+            field_name = f"{icon} [{label}] {event_name}"[:256]
+            field_value = field_value[:1024]
+
+            embed.add_field(
+                name=field_name,
+                value=field_value,
+                inline=False,
+            )
+
+        embed.set_footer(text=f"直近 {len(history)} 件を表示")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ---- エクスポート/インポート ----
+
+    EXPORT_CSV_COLUMNS = [
+        'event_name', 'recurrence', 'weekday', 'nth_weeks', 'monthly_dates',
+        'time', 'duration_minutes', 'tags', 'description', 'color_name',
+        'x_url', 'vrc_group_url', 'official_url', 'calendar_name',
+    ]
+
+    def _generate_csv_content(events: list, guild_id: str) -> str:
+        """イベントリストからCSV文字列を生成"""
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(EXPORT_CSV_COLUMNS)
+
+        # カレンダーオーナー → 表示名のマッピング
+        all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
+        owner_to_name = {}
+        for t in all_tokens:
+            uid = t.get('_doc_id') or t.get('authenticated_by', '')
+            owner_to_name[uid] = t.get('display_name', '')
+
+        for event in events:
+            tags = _parse_json_field(event.get('tags'))
+            nth_weeks = _parse_json_field(event.get('nth_weeks'))
+            monthly_dates = _parse_json_field(event.get('monthly_dates'))
+            cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+            cal_name = owner_to_name.get(cal_owner, '')
+
+            writer.writerow([
+                event.get('event_name', ''),
+                event.get('recurrence', ''),
+                event.get('weekday', ''),
+                ';'.join(str(w) for w in nth_weeks) if nth_weeks else '',
+                ';'.join(str(d) for d in monthly_dates) if monthly_dates else '',
+                event.get('time', ''),
+                event.get('duration_minutes', 60),
+                ';'.join(tags) if tags else '',
+                event.get('description', ''),
+                event.get('color_name', ''),
+                event.get('x_url', '') or '',
+                event.get('vrc_group_url', '') or '',
+                event.get('official_url', '') or '',
+                cal_name,
+            ])
+        return output.getvalue()
+
+    def _generate_json_content(events: list, guild_id: str) -> str:
+        """イベントリストからJSON文字列を生成"""
+        all_tokens = bot.db_manager.get_all_oauth_tokens(guild_id)
+        owner_to_name = {}
+        for t in all_tokens:
+            uid = t.get('_doc_id') or t.get('authenticated_by', '')
+            owner_to_name[uid] = t.get('display_name', '')
+
+        export_data = {
+            "version": "1.0",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "guild_id": guild_id,
+            "events": [],
+        }
+        for event in events:
+            tags = _parse_json_field(event.get('tags'))
+            nth_weeks = _parse_json_field(event.get('nth_weeks'))
+            monthly_dates = _parse_json_field(event.get('monthly_dates'))
+            cal_owner = event.get('calendar_owner') or event.get('created_by', '')
+
+            export_data["events"].append({
+                "event_name": event.get('event_name', ''),
+                "recurrence": event.get('recurrence', ''),
+                "weekday": event.get('weekday'),
+                "nth_weeks": nth_weeks if nth_weeks else None,
+                "monthly_dates": monthly_dates if monthly_dates else None,
+                "time": event.get('time', ''),
+                "duration_minutes": event.get('duration_minutes', 60),
+                "tags": tags,
+                "description": event.get('description', ''),
+                "color_name": event.get('color_name', ''),
+                "x_url": event.get('x_url') or '',
+                "vrc_group_url": event.get('vrc_group_url') or '',
+                "official_url": event.get('official_url') or '',
+                "calendar_name": owner_to_name.get(cal_owner, ''),
+            })
+        return json.dumps(export_data, ensure_ascii=False, indent=2)
+
+    @bot.tree.command(name="エクスポート", description="登録済み予定をファイルに出力します")
+    @app_commands.describe(形式="出力形式")
+    @app_commands.choices(形式=[
+        app_commands.Choice(name="CSV", value="csv"),
+        app_commands.Choice(name="JSON", value="json"),
+    ])
+    async def export_command(interaction: discord.Interaction, 形式: str = "csv"):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        if not interaction.guild_id:
+            await interaction.followup.send("⚠️ このコマンドはサーバー内で使用してください。", ephemeral=True)
+            return
+
+        events = bot.db_manager.get_all_active_events(guild_id)
+        if not events:
+            await interaction.followup.send("📭 エクスポートする予定がありません。", ephemeral=True)
+            return
+
+        timestamp = datetime.now().strftime('%Y%m%d')
+        if 形式 == "csv":
+            content = _generate_csv_content(events, guild_id)
+            filename = f"events_{guild_id}_{timestamp}.csv"
+            file_bytes = content.encode('utf-8-sig')
+        else:
+            content = _generate_json_content(events, guild_id)
+            filename = f"events_{guild_id}_{timestamp}.json"
+            file_bytes = content.encode('utf-8')
+
+        # Discord添付ファイル上限チェック（通常サーバー: 25MB）
+        max_file_size = 25 * 1024 * 1024
+        if len(file_bytes) > max_file_size:
+            await interaction.followup.send(
+                f"❌ エクスポートファイルが大きすぎます（{len(file_bytes) // 1024}KB）。予定数を減らしてください。",
+                ephemeral=True,
+            )
+            return
+
+        file = discord.File(io.BytesIO(file_bytes), filename=filename)
+        await interaction.followup.send(f"📤 {len(events)} 件の予定をエクスポートしました。", file=file, ephemeral=True)
+
+    # ---- インポート ----
+
+    VALID_RECURRENCES = {'weekly', 'biweekly', 'nth_week', 'monthly_date', 'irregular'}
+
+    def _parse_csv_import(content: str) -> Tuple[list, list]:
+        """CSVをパースしイベント辞書リストとエラーリストを返す"""
+        events = []
+        errors = []
+        reader = csv.DictReader(io.StringIO(content))
+        for i, row in enumerate(reader, start=2):
+            try:
+                event = {
+                    'event_name': row.get('event_name', '').strip(),
+                    'recurrence': row.get('recurrence', '').strip(),
+                    'weekday': int(row['weekday']) if row.get('weekday', '').strip() else None,
+                    'nth_weeks': [int(x) for x in row['nth_weeks'].split(';') if x.strip()] if row.get('nth_weeks', '').strip() else None,
+                    'monthly_dates': [int(x) for x in row['monthly_dates'].split(';') if x.strip()] if row.get('monthly_dates', '').strip() else None,
+                    'time': row.get('time', '').strip(),
+                    'duration_minutes': int(row['duration_minutes']) if row.get('duration_minutes', '').strip() else 60,
+                    'tags': [t.strip() for t in row['tags'].split(';') if t.strip()] if row.get('tags', '').strip() else [],
+                    'description': row.get('description', '').strip(),
+                    'color_name': row.get('color_name', '').strip() or None,
+                    'x_url': row.get('x_url', '').strip() or None,
+                    'vrc_group_url': row.get('vrc_group_url', '').strip() or None,
+                    'official_url': row.get('official_url', '').strip() or None,
+                    'calendar_name': row.get('calendar_name', '').strip() or None,
+                }
+                events.append(event)
+            except (ValueError, KeyError) as e:
+                errors.append(f"行 {i}: {e}")
+        return events, errors
+
+    def _parse_json_import(content: str) -> Tuple[list, list]:
+        """JSONをパースしイベント辞書リストとエラーリストを返す"""
+        errors = []
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
+            return [], [f"JSONパースエラー: {e}"]
+
+        if not isinstance(data, dict) or 'events' not in data:
+            return [], ["JSONフォーマットが不正です。'events' キーが必要です。"]
+
+        events = []
+        for i, ev in enumerate(data['events'], start=1):
+            try:
+                event = {
+                    'event_name': ev.get('event_name', '').strip(),
+                    'recurrence': ev.get('recurrence', '').strip(),
+                    'weekday': ev.get('weekday'),
+                    'nth_weeks': ev.get('nth_weeks'),
+                    'monthly_dates': ev.get('monthly_dates'),
+                    'time': ev.get('time', '').strip(),
+                    'duration_minutes': ev.get('duration_minutes', 60),
+                    'tags': ev.get('tags', []) or [],
+                    'description': ev.get('description', '').strip(),
+                    'color_name': ev.get('color_name') or None,
+                    'x_url': ev.get('x_url') or None,
+                    'vrc_group_url': ev.get('vrc_group_url') or None,
+                    'official_url': ev.get('official_url') or None,
+                    'calendar_name': ev.get('calendar_name') or None,
+                }
+                events.append(event)
+            except Exception as e:
+                errors.append(f"イベント {i}: {e}")
+        return events, errors
+
+    def _validate_import_events(events: list, guild_id: str) -> Tuple[list, list]:
+        """バリデーションし valid と skipped を返す"""
+        valid = []
+        skipped = []
+
+        existing_names = {e['event_name'] for e in bot.db_manager.get_all_active_events(guild_id)}
+
+        for i, ev in enumerate(events):
+            reasons = []
+            name = ev.get('event_name', '')
+            if not name or len(name) > 100:
+                reasons.append("event_name が未指定または100文字超")
+            recurrence = ev.get('recurrence', '')
+            if recurrence not in VALID_RECURRENCES:
+                reasons.append(f"recurrence が不正: '{recurrence}'")
+            nth_weeks = ev.get('nth_weeks')
+            if recurrence == 'nth_week':
+                if not nth_weeks:
+                    reasons.append("nth_weeks が未指定")
+                elif (
+                    not isinstance(nth_weeks, list)
+                    or any(not isinstance(week, int) or not (1 <= week <= 5) for week in nth_weeks)
+                ):
+                    reasons.append(f"nth_weeks が不正: {nth_weeks}")
+            monthly_dates = ev.get('monthly_dates')
+            if recurrence == 'monthly_date':
+                if not monthly_dates:
+                    reasons.append("monthly_dates が未指定")
+                elif (
+                    not isinstance(monthly_dates, list)
+                    or any(not isinstance(day, int) or not (1 <= day <= 31) for day in monthly_dates)
+                ):
+                    reasons.append(f"monthly_dates が不正: {monthly_dates}")
+            weekday = ev.get('weekday')
+            if recurrence not in ('irregular', 'monthly_date') and weekday is None:
+                reasons.append("weekday が未指定")
+            elif weekday is not None:
+                if not isinstance(weekday, int):
+                    try:
+                        ev['weekday'] = int(weekday)
+                        weekday = ev['weekday']
+                    except (ValueError, TypeError):
+                        reasons.append(f"weekday が数値ではありません: {weekday}")
+                if isinstance(weekday, int) and not (0 <= weekday <= 6):
+                    reasons.append(f"weekday が範囲外: {weekday}")
+            time_str = ev.get('time', '')
+            if time_str:
+                try:
+                    h, m = map(int, time_str.split(':'))
+                    if not (0 <= h <= 23 and 0 <= m <= 59):
+                        reasons.append(f"time が範囲外: {time_str}")
+                except (ValueError, TypeError):
+                    reasons.append(f"time のフォーマットが不正: {time_str}")
+            dur = ev.get('duration_minutes', 60)
+            if not isinstance(dur, int):
+                try:
+                    dur = int(dur)
+                    ev['duration_minutes'] = dur
+                except (ValueError, TypeError):
+                    reasons.append(f"duration_minutes が数値ではありません: {dur}")
+                    dur = None
+            if dur is not None and not (1 <= dur <= 1440):
+                reasons.append(f"duration_minutes が範囲外: {dur}")
+
+            if reasons:
+                skipped.append({"event": ev, "reasons": reasons})
+            else:
+                # 重複警告を付加
+                warnings = []
+                if name in existing_names:
+                    warnings.append("同名の予定が既に存在します")
+                ev['_warnings'] = warnings
+                valid.append(ev)
+
+        return valid, skipped
+
+    class ImportConfirmView(discord.ui.View):
+        def __init__(self, author_id: int):
+            super().__init__(timeout=300)
+            self.author_id = author_id
+            self.confirmed = False
+            self.message: Optional[discord.Message] = None
+
+        async def on_timeout(self):
+            if self.message:
+                try:
+                    await self.message.edit(
+                        content="⏰ インポート確認がタイムアウトしました。もう一度やり直してください。",
+                        view=None,
+                        embed=None,
+                    )
+                except Exception:
+                    pass
+
+        @discord.ui.button(label="インポート実行", style=discord.ButtonStyle.green, emoji="📥")
+        async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if interaction.user.id != self.author_id:
+                await interaction.response.send_message("⚠️ 操作権限がありません。", ephemeral=True)
+                return
+            self.confirmed = True
+            self.stop()
+            await interaction.response.edit_message(content="⏳ インポート中...", view=None, embed=None)
+
+        @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.grey, emoji="❌")
+        async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if interaction.user.id != self.author_id:
+                await interaction.response.send_message("⚠️ 操作権限がありません。", ephemeral=True)
+                return
+            self.stop()
+            await interaction.response.edit_message(content="❌ インポートをキャンセルしました。", view=None, embed=None)
+
+    @bot.tree.command(name="インポート", description="ファイルから予定を一括登録します")
+    @app_commands.describe(ファイル="CSVまたはJSONファイル")
+    async def import_command(interaction: discord.Interaction, ファイル: discord.Attachment):
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild_id) if interaction.guild_id else ""
+        if not interaction.guild_id:
+            await interaction.followup.send("⚠️ このコマンドはサーバー内で使用してください。", ephemeral=True)
+            return
+
+        # ファイルサイズチェック（1MB上限）
+        max_import_size = 1 * 1024 * 1024
+        if ファイル.size and ファイル.size > max_import_size:
+            await interaction.followup.send(
+                f"❌ ファイルが大きすぎます（{ファイル.size // 1024}KB）。1MB以下のファイルを使用してください。",
+                ephemeral=True,
+            )
+            return
+
+        # ファイル読み込み
+        try:
+            raw = await ファイル.read()
+            # BOM付きUTF-8に対応
+            content = raw.decode('utf-8-sig')
+        except Exception as e:
+            await interaction.followup.send(f"❌ ファイルの読み込みに失敗しました: {e}", ephemeral=True)
+            return
+
+        # パース
+        filename = (ファイル.filename or "").lower()
+        if filename.endswith('.csv'):
+            events, parse_errors = _parse_csv_import(content)
+        elif filename.endswith('.json'):
+            events, parse_errors = _parse_json_import(content)
+        else:
+            await interaction.followup.send("❌ CSV (.csv) または JSON (.json) ファイルを添付してください。", ephemeral=True)
+            return
+
+        if not events and parse_errors:
+            await interaction.followup.send(f"❌ パースエラー:\n" + "\n".join(parse_errors[:10]), ephemeral=True)
+            return
+
+        # 最大件数チェック
+        if len(events) > 100:
+            await interaction.followup.send(f"❌ 1回のインポートは最大100件です（{len(events)} 件検出）。", ephemeral=True)
+            return
+
+        # バリデーション
+        valid, skipped = _validate_import_events(events, guild_id)
+
+        if not valid:
+            msg = "❌ インポート可能な予定がありません。\n"
+            for s in skipped[:10]:
+                msg += f"  ・{s['event'].get('event_name', '?')}: {', '.join(s['reasons'])}\n"
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+
+        # プレビュー Embed
+        embed = discord.Embed(title="📥 インポートプレビュー", color=0x57F287)
+        preview_lines = []
+        for ev in valid[:20]:
+            recurrence_label = RECURRENCE_TYPES.get(ev['recurrence'], ev['recurrence'])
+            line = f"✅ **{ev['event_name']}** ({recurrence_label}, {ev.get('time', '?')})"
+            if ev.get('_warnings'):
+                line += f" ⚠️ {', '.join(ev['_warnings'])}"
+            preview_lines.append(line)
+        if len(valid) > 20:
+            preview_lines.append(f"  ...他 {len(valid) - 20} 件")
+        embed.description = "\n".join(preview_lines)
+
+        if skipped:
+            skip_lines = []
+            for s in skipped[:5]:
+                skip_lines.append(f"⚠️ {s['event'].get('event_name', '?')}: {', '.join(s['reasons'])}")
+            embed.add_field(name="スキップ", value="\n".join(skip_lines), inline=False)
+        if parse_errors:
+            embed.add_field(name="パースエラー", value="\n".join(parse_errors[:5]), inline=False)
+
+        embed.set_footer(text=f"✅ {len(valid)} 件登録予定 / ⚠️ {len(skipped)} 件スキップ")
+
+        view = ImportConfirmView(author_id=interaction.user.id)
+        view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True, wait=True)
+
+        await view.wait()
+        if not view.confirmed:
+            return
+
+        # 一括登録
+        success_count = 0
+        fail_count = 0
+        fail_details = []
+
+        for ev in valid:
+            try:
+                # カレンダーオーナー解決
+                if ev.get('calendar_name'):
+                    token_info = _resolve_calendar_owner(bot, guild_id, ev['calendar_name'])
+                    if token_info:
+                        ev['_calendar_owner'] = token_info.get('_doc_id') or token_info.get('authenticated_by')
+                if not ev.get('_calendar_owner'):
+                    default_token = bot.db_manager.get_default_oauth_tokens(guild_id)
+                    if default_token:
+                        ev['_calendar_owner'] = default_token.get('_doc_id') or default_token.get('authenticated_by')
+
+                # 色自動割当
+                cal_owner = ev.get('_calendar_owner', '')
+                if not ev.get('color_name') and cal_owner:
+                    nth_weeks = ev.get('nth_weeks')
+                    auto_color = _auto_assign_color(bot.db_manager, guild_id, cal_owner, ev['recurrence'], nth_weeks)
+                    if auto_color:
+                        ev['color_name'] = auto_color['name']
+
+                result = await _handle_add_event_direct(
+                    bot, guild_id, interaction.channel_id, interaction.user.id, ev
+                )
+                if result and result.startswith("✅"):
+                    success_count += 1
+                else:
+                    fail_count += 1
+                    fail_details.append(f"{ev['event_name']}: {result}")
+
+                # レート制限対策
+                await asyncio.sleep(0.5)
+
+            except Exception as e:
+                fail_count += 1
+                fail_details.append(f"{ev.get('event_name', '?')}: {e}")
+
+        # 結果報告
+        result_embed = discord.Embed(title="📥 インポート結果", color=0x57F287 if fail_count == 0 else 0xFEE75C)
+        result_embed.description = (
+            f"✅ **{success_count}** 件 登録完了\n"
+            f"❌ **{fail_count}** 件 失敗\n"
+            f"⚠️ **{len(skipped)}** 件 スキップ"
+        )
+        if fail_details:
+            result_embed.add_field(
+                name="失敗詳細",
+                value="\n".join(fail_details[:10]),
+                inline=False,
+            )
+        await interaction.followup.send(embed=result_embed, ephemeral=True)
 
     # ---- 色管理グループ ----
     color_group = app_commands.Group(name="色", description="色プリセットの管理")
@@ -913,6 +1442,7 @@ def setup_commands(bot: CalendarBot):
         tags_in_group = [t['name'] for t in tags_list if t.get('group_id') == id]
 
         updated_count = 0
+        failed_count = 0
         if tags_in_group:
             all_events = bot.db_manager.get_all_active_events(guild_id)
             for event in all_events:
@@ -940,12 +1470,15 @@ def setup_commands(bot: CalendarBot):
                 try:
                     cal_mgr.update_events(ids, {'description': new_desc})
                     updated_count += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    failed_count += 1
+                    print(f"[Calendar sync] Failed to update events for {event.get('event_name')}: {e}")
 
         msg = f"✅ タググループ「{old_name}」を「{新しい名前}」に変更しました。"
         if updated_count:
             msg += f"\n📝 {updated_count} 件の予定の説明欄を更新しました。"
+        if failed_count:
+            msg += f"\n⚠️ {failed_count} 件のカレンダー更新に失敗しました。次回の自動同期で修復されます。"
         await interaction.followup.send(msg, ephemeral=True)
 
     @tag_group.command(name="グループ削除", description="タググループを削除します")
@@ -970,6 +1503,7 @@ def setup_commands(bot: CalendarBot):
             tag_groups = bot.db_manager.list_tag_groups(guild_id)
             tags_list = bot.db_manager.list_tags(guild_id)
             updated_count = 0
+            failed_count = 0
             for event in all_events:
                 old_tags = _parse_json_field(event.get('tags'))
                 new_tags = [t for t in old_tags if t not in tags_in_group]
@@ -996,12 +1530,15 @@ def setup_commands(bot: CalendarBot):
                                         'description': new_desc,
                                         'extendedProperties': {'private': {'tags': json.dumps(new_tags, ensure_ascii=False)}},
                                     })
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    failed_count += 1
+                                    print(f"[Calendar sync] Failed to update events for {event.get('event_name')}: {e}")
                     updated_count += 1
             msg = f"✅ タググループID {id} を削除しました。"
             if updated_count:
                 msg += f"\n📝 {updated_count} 件の予定からタグを除去しました。"
+            if failed_count:
+                msg += f"\n⚠️ {failed_count} 件のカレンダー更新に失敗しました。次回の自動同期で修復されます。"
             await interaction.followup.send(msg, ephemeral=True)
         else:
             await interaction.followup.send(f"✅ タググループID {id} を削除しました。", ephemeral=True)
@@ -1033,6 +1570,7 @@ def setup_commands(bot: CalendarBot):
         tag_groups = bot.db_manager.list_tag_groups(guild_id)
         tags_list = bot.db_manager.list_tags(guild_id)
         updated_count = 0
+        failed_count = 0
         for event in affected:
             old_tags = _parse_json_field(event.get('tags'))
             new_tags = [t for t in old_tags if t != 名前]
@@ -1058,13 +1596,16 @@ def setup_commands(bot: CalendarBot):
                             'description': new_desc,
                             'extendedProperties': {'private': {'tags': json.dumps(new_tags, ensure_ascii=False)}},
                         })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        failed_count += 1
+                        print(f"[Calendar sync] Failed to update events for {event.get('event_name')}: {e}")
             updated_count += 1
 
         msg = f"✅ タグ「{名前}」を削除しました。"
         if updated_count:
             msg += f"\n📝 {updated_count} 件の予定からタグを除去しました。"
+        if failed_count:
+            msg += f"\n⚠️ {failed_count} 件のカレンダー更新に失敗しました。次回の自動同期で修復されます。"
         await interaction.followup.send(msg, ephemeral=True)
 
     bot.tree.add_command(tag_group)
@@ -1618,7 +2159,7 @@ async def _dispatch_action(
         return await confirm_and_handle_delete_event(bot, interaction, parsed)
     elif action == "skip":
         guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-        return await _handle_skip_event_direct(bot, guild_id, parsed)
+        return await _handle_skip_event_direct(bot, guild_id, parsed, user_id=str(interaction.user.id))
     elif action == "search":
         return await handle_search_event(bot, interaction, parsed)
     else:
@@ -1821,13 +2362,13 @@ async def _confirm_and_handle_in_thread(
         result = await _handle_add_event_direct(bot, guild_id, thread.parent_id, author.id, parsed)
         return (result, True)
     elif action == "edit":
-        result = await _handle_edit_event_direct(bot, guild_id, parsed)
+        result = await _handle_edit_event_direct(bot, guild_id, parsed, user_id=str(author.id))
         return (result, True)
     elif action == "skip":
-        result = await _handle_skip_event_direct(bot, guild_id, parsed)
+        result = await _handle_skip_event_direct(bot, guild_id, parsed, user_id=str(author.id))
         return (result, True)
     elif action == "delete":
-        result = await _handle_delete_event_direct(bot, guild_id, parsed)
+        result = await _handle_delete_event_direct(bot, guild_id, parsed, user_id=str(author.id))
         return (result, True)
     return (None, True)
 
@@ -2491,6 +3032,24 @@ async def _handle_add_event_direct(
             [{"event_id": google_event_id, "rrule": rrule}]
         )
 
+        _safe_add_event_history(bot.db_manager,
+            guild_id=guild_id,
+            event_id=event_id,
+            event_name=parsed['event_name'],
+            action="add",
+            changed_by=str(user_id),
+            changes={
+                "summary": "新規登録",
+                "fields": {
+                    "recurrence": parsed['recurrence'],
+                    "weekday": parsed.get('weekday'),
+                    "time": parsed.get('time'),
+                    "duration_minutes": parsed.get('duration_minutes', 60),
+                    "tags": tags,
+                },
+            },
+        )
+
         return (
             f"✅ 予定を登録しました！\n"
             f"📅 {parsed['event_name']}\n"
@@ -2499,6 +3058,24 @@ async def _handle_add_event_direct(
             f"📌 次回: {start_dt.strftime('%Y-%m-%d')}"
         )
     else:
+        _safe_add_event_history(bot.db_manager,
+            guild_id=guild_id,
+            event_id=event_id,
+            event_name=parsed['event_name'],
+            action="add",
+            changed_by=str(user_id),
+            changes={
+                "summary": "新規登録",
+                "fields": {
+                    "recurrence": parsed['recurrence'],
+                    "weekday": parsed.get('weekday'),
+                    "time": parsed.get('time'),
+                    "duration_minutes": parsed.get('duration_minutes', 60),
+                    "tags": tags,
+                },
+            },
+        )
+
         return (
             f"✅ 不定期予定を登録しました！\n"
             f"📅 {parsed['event_name']}\n"
@@ -2529,17 +3106,8 @@ def _sync_google_calendar_edit(
 
     new_recurrence = parsed.get('recurrence', event.get('recurrence'))
 
+    delete_warnings = ""
     if structural_change and new_recurrence != 'irregular':
-        # 旧イベントを削除
-        for ge in google_cal_data:
-            try:
-                cal_mgr.service.events().delete(
-                    calendarId=cal_mgr.calendar_id, eventId=ge['event_id']
-                ).execute()
-            except Exception:
-                pass
-
-        # 新しいRRULEで再作成
         new_nth_weeks = parsed.get('nth_weeks') or _parse_json_field(event.get('nth_weeks'))
         new_monthly_dates = parsed.get('monthly_dates') or (
             json.loads(event['monthly_dates']) if event.get('monthly_dates') else None
@@ -2568,9 +3136,14 @@ def _sync_google_calendar_edit(
         rrule = RecurrenceCalculator.to_rrule(new_recurrence, new_nth_weeks, new_weekday or 0, monthly_dates=new_monthly_dates)
         # start_date が指定されていれば使用、なければ従来通り計算
         if parsed.get('start_date'):
-            hour, minute = map(int, new_time.split(':'))
-            sd = datetime.strptime(parsed['start_date'], '%Y-%m-%d')
-            start_dt = sd.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            try:
+                hour, minute = map(int, new_time.split(':'))
+                if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                    raise ValueError(f"時刻が範囲外です: {new_time}")
+                sd = datetime.strptime(parsed['start_date'], '%Y-%m-%d')
+                start_dt = sd.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            except (ValueError, TypeError) as e:
+                return f"❌ 日付または時刻のフォーマットが不正です: {e}"
         else:
             start_dt = _next_weekday_datetime(
                 new_weekday, new_time,
@@ -2578,6 +3151,24 @@ def _sync_google_calendar_edit(
                 monthly_dates=new_monthly_dates,
             )
         end_dt = start_dt + timedelta(minutes=new_duration)
+
+        # 旧イベントを削除
+        delete_failures = []
+        for ge in google_cal_data:
+            try:
+                cal_mgr.service.events().delete(
+                    calendarId=cal_mgr.calendar_id, eventId=ge['event_id']
+                ).execute()
+            except Exception as e:
+                # 404 (Not Found) は既に削除済みなので無視
+                is_not_found = (
+                    hasattr(e, 'resp') and hasattr(e.resp, 'status') and e.resp.status == 404
+                ) or "404" in str(e)
+                if not is_not_found:
+                    delete_failures.append(ge['event_id'])
+                    print(f"[Calendar edit] Failed to delete old event {ge['event_id']}: {e}")
+        if delete_failures:
+            delete_warnings = f"\n⚠️ 旧カレンダーイベント {len(delete_failures)} 件の削除に失敗しました。手動で削除が必要な場合があります。"
 
         google_event_id = cal_mgr.create_recurring_event(
             summary=new_event_name,
@@ -2637,13 +3228,14 @@ def _sync_google_calendar_edit(
                 google_updates['extendedProperties'] = {'private': bot_ext}
             cal_mgr.update_events(google_event_ids, google_updates)
 
-    return None
+    return delete_warnings if delete_warnings else None
 
 
 async def _handle_edit_event_direct(
     bot: CalendarBot,
     guild_id: str,
     parsed: Dict[str, Any],
+    user_id: str = "",
 ) -> str:
     """interactionなしで予定を編集する（スレッド内用）"""
     events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
@@ -2697,19 +3289,44 @@ async def _handle_edit_event_direct(
     if 'official_url' in parsed:
         updates['official_url'] = parsed.get('official_url') or None
 
-    bot.db_manager.update_event(event['id'], updates)
+    result = _sync_google_calendar_edit(bot, guild_id, event, parsed, updates, cal_owner)
+    if result and result.startswith("❌"):
+        return result
 
-    error = _sync_google_calendar_edit(bot, guild_id, event, parsed, updates, cal_owner)
-    if error:
-        return error
+    try:
+        bot.db_manager.update_event(event['id'], updates)
+    except Exception as e:
+        print(f"[edit] Firestore update failed for event {event['id']}: {e}")
+        return f"❌ カレンダーは更新されましたが、データベースの更新に失敗しました: {e}"
 
-    return f"✅ 予定「{event['event_name']}」を更新しました。"
+    change_fields = {}
+    for key, new_val in updates.items():
+        if key in ('start_date',):
+            continue
+        old_val = event.get(key)
+        if key == 'tags':
+            old_val = _parse_json_field(old_val)
+        change_fields[key] = {"before": old_val, "after": new_val}
+    _safe_add_event_history(bot.db_manager,
+        guild_id=guild_id,
+        event_id=event['id'],
+        event_name=event['event_name'],
+        action="edit",
+        changed_by=user_id,
+        changes={"summary": "予定を編集", "fields": change_fields},
+    )
+
+    msg = f"✅ 予定「{event['event_name']}」を更新しました。"
+    if result:
+        msg += result
+    return msg
 
 
 async def _handle_skip_event_direct(
     bot: CalendarBot,
     guild_id: str,
     parsed: Dict[str, Any],
+    user_id: str = "",
 ) -> str:
     """定期予定の特定回をスキップする"""
     events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
@@ -2747,6 +3364,16 @@ async def _handle_skip_event_direct(
     # Firestore に excluded_dates を追加
     bot.db_manager.add_excluded_date(event['id'], skip_date)
 
+    # 変更履歴を記録
+    _safe_add_event_history(bot.db_manager,
+        guild_id=guild_id,
+        event_id=event['id'],
+        event_name=event['event_name'],
+        action="skip",
+        changed_by=user_id,
+        changes={"summary": f"{skip_date} をスキップ", "skip_date": skip_date},
+    )
+
     # 日付を表示用にフォーマット
     try:
         dt = datetime.strptime(skip_date, "%Y-%m-%d")
@@ -2761,6 +3388,7 @@ async def _handle_delete_event_direct(
     bot: CalendarBot,
     guild_id: str,
     parsed: Dict[str, Any],
+    user_id: str = "",
 ) -> str:
     """interactionなしで予定を削除する（スレッド内用）"""
     events = bot.db_manager.search_events_by_name(parsed.get('event_name'), guild_id)
@@ -2780,6 +3408,16 @@ async def _handle_delete_event_direct(
 
     bot.db_manager.delete_event(event['id'])
 
+    # 変更履歴を記録
+    _safe_add_event_history(bot.db_manager,
+        guild_id=guild_id,
+        event_id=event['id'],
+        event_name=event['event_name'],
+        action="delete",
+        changed_by=user_id,
+        changes={"summary": "予定を削除"},
+    )
+
     return f"✅ 予定「{event['event_name']}」を削除しました。"
 
 
@@ -2795,17 +3433,17 @@ async def handle_add_event(bot: CalendarBot, interaction: discord.Interaction, p
 async def handle_edit_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
     """予定編集処理（interactionベース → 共通ロジックに委譲）"""
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-    return await _handle_edit_event_direct(bot, guild_id, parsed)
+    return await _handle_edit_event_direct(bot, guild_id, parsed, user_id=str(interaction.user.id))
 
 async def handle_delete_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
     """予定削除処理（interactionベース → 共通ロジックに委譲）"""
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-    return await _handle_delete_event_direct(bot, guild_id, parsed)
+    return await _handle_delete_event_direct(bot, guild_id, parsed, user_id=str(interaction.user.id))
 
 async def handle_skip_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> str:
     """予定スキップ処理（interactionベース → 共通ロジックに委譲）"""
     guild_id = str(interaction.guild_id) if interaction.guild_id else ""
-    return await _handle_skip_event_direct(bot, guild_id, parsed)
+    return await _handle_skip_event_direct(bot, guild_id, parsed, user_id=str(interaction.user.id))
 
 async def handle_search_event(bot: CalendarBot, interaction: discord.Interaction, parsed: Dict[str, Any]) -> Optional[str]:
     """予定検索処理"""

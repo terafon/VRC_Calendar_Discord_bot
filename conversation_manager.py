@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import Dict, Optional, Any
 
@@ -35,12 +36,13 @@ class ConversationSession:
 
 
 class ConversationManager:
-    """会話セッションをスレッドIDで管理する"""
+    """会話セッションをスレッドIDで管理する（asyncio.Lock で同一イベントループ上のタスク間排他）"""
 
     def __init__(self):
         self._sessions: Dict[int, ConversationSession] = {}
+        self._lock = asyncio.Lock()
 
-    def create_session(
+    async def create_session(
         self,
         guild_id: str,
         channel_id: int,
@@ -51,39 +53,48 @@ class ConversationManager:
         server_context: Optional[Dict[str, Any]] = None,
         timeout: int = 300,
     ) -> ConversationSession:
-        self.cleanup_expired()  # 期限切れセッションをクリーンアップ
-        session = ConversationSession(
-            guild_id=guild_id,
-            channel_id=channel_id,
-            thread_id=thread_id,
-            user_id=user_id,
-            chat_session=chat_session,
-            action=action,
-            timeout=timeout,
-        )
-        if server_context:
-            session.server_context = server_context
-        self._sessions[thread_id] = session
-        return session
+        async with self._lock:
+            # 期限切れセッションをクリーンアップ
+            self._cleanup_expired_locked()
+            session = ConversationSession(
+                guild_id=guild_id,
+                channel_id=channel_id,
+                thread_id=thread_id,
+                user_id=user_id,
+                chat_session=chat_session,
+                action=action,
+                timeout=timeout,
+            )
+            if server_context:
+                session.server_context = server_context
+            self._sessions[thread_id] = session
+            return session
 
-    def get_session(self, thread_id: int) -> Optional[ConversationSession]:
-        session = self._sessions.get(thread_id)
-        if session and session.is_expired():
-            self.remove_session(thread_id)
-            return None
-        return session
+    async def get_session(self, thread_id: int) -> Optional[ConversationSession]:
+        async with self._lock:
+            session = self._sessions.get(thread_id)
+            if session and session.is_expired():
+                del self._sessions[thread_id]
+                return None
+            return session
 
-    def remove_session(self, thread_id: int):
-        self._sessions.pop(thread_id, None)
+    async def remove_session(self, thread_id: int):
+        async with self._lock:
+            self._sessions.pop(thread_id, None)
 
-    def cleanup_expired(self) -> list:
+    async def cleanup_expired(self) -> list:
         """タイムアウトしたセッションを削除し、削除対象のthread_idリストを返す"""
+        async with self._lock:
+            return self._cleanup_expired_locked()
+
+    def _cleanup_expired_locked(self) -> list:
+        """ロック取得済み前提の内部クリーンアップ"""
         expired = [
             tid for tid, session in self._sessions.items()
             if session.is_expired()
         ]
         for tid in expired:
-            self._sessions.pop(tid, None)
+            del self._sessions[tid]
         return expired
 
     @property

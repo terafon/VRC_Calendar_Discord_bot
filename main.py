@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import threading
 from flask import Flask, request
@@ -211,6 +212,9 @@ async def send_weekly_notifications():
 
 def run_discord_bot():
     """Discord Botを別スレッドで実行"""
+    if not discord_bot_token:
+        raise RuntimeError("DISCORD_BOT_TOKEN is not set. Bot cannot start.")
+
     global bot_loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -223,10 +227,6 @@ def run_discord_bot():
             async def on_ready():
                 print(f'Logged in as {bot.user}')
                 bot_ready.set()
-
-            if not discord_bot_token:
-                print("ERROR: DISCORD_BOT_TOKEN is not set. Bot cannot start.")
-                return
             await bot.start(discord_bot_token)
 
     try:
@@ -237,6 +237,10 @@ def run_discord_bot():
         loop.close()
 
 if __name__ == '__main__':
+    if not discord_bot_token:
+        print("FATAL: DISCORD_BOT_TOKEN is not set. Bot cannot start.", file=sys.stderr)
+        sys.exit(1)
+
     # Discord Botをスレッドで開始
     bot_thread = threading.Thread(target=run_discord_bot, daemon=True)
     bot_thread.start()
