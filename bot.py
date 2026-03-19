@@ -27,6 +27,14 @@ def _parse_json_field(value):
     return value if value is not None else []
 
 
+def _safe_add_event_history(db_manager, **kwargs):
+    """変更履歴をベストエフォートで記録（失敗してもコア処理に影響しない）"""
+    try:
+        db_manager.add_event_history(**kwargs)
+    except Exception as e:
+        print(f"[event_history] Failed to record history: {e}")
+
+
 RECURRENCE_TYPES = {
     "weekly": "毎週",
     "biweekly": "隔週",
@@ -1062,7 +1070,7 @@ def setup_commands(bot: CalendarBot):
             return
 
         # パース
-        filename = ファイル.filename or ""
+        filename = (ファイル.filename or "").lower()
         if filename.endswith('.csv'):
             events, parse_errors = _parse_csv_import(content)
         elif filename.endswith('.json'):
@@ -3000,7 +3008,7 @@ async def _handle_add_event_direct(
             [{"event_id": google_event_id, "rrule": rrule}]
         )
 
-        bot.db_manager.add_event_history(
+        _safe_add_event_history(bot.db_manager,
             guild_id=guild_id,
             event_id=event_id,
             event_name=parsed['event_name'],
@@ -3026,7 +3034,7 @@ async def _handle_add_event_direct(
             f"📌 次回: {start_dt.strftime('%Y-%m-%d')}"
         )
     else:
-        bot.db_manager.add_event_history(
+        _safe_add_event_history(bot.db_manager,
             guild_id=guild_id,
             event_id=event_id,
             event_name=parsed['event_name'],
@@ -3129,7 +3137,10 @@ def _sync_google_calendar_edit(
                 ).execute()
             except Exception as e:
                 # 404 (Not Found) は既に削除済みなので無視
-                if "404" not in str(e):
+                is_not_found = (
+                    hasattr(e, 'resp') and hasattr(e.resp, 'status') and e.resp.status == 404
+                ) or "404" in str(e)
+                if not is_not_found:
                     delete_failures.append(ge['event_id'])
                     print(f"[Calendar edit] Failed to delete old event {ge['event_id']}: {e}")
         if delete_failures:
@@ -3268,7 +3279,7 @@ async def _handle_edit_event_direct(
         if key == 'tags':
             old_val = _parse_json_field(old_val)
         change_fields[key] = {"before": old_val, "after": new_val}
-    bot.db_manager.add_event_history(
+    _safe_add_event_history(bot.db_manager,
         guild_id=guild_id,
         event_id=event['id'],
         event_name=event['event_name'],
@@ -3326,7 +3337,7 @@ async def _handle_skip_event_direct(
     bot.db_manager.add_excluded_date(event['id'], skip_date)
 
     # 変更履歴を記録
-    bot.db_manager.add_event_history(
+    _safe_add_event_history(bot.db_manager,
         guild_id=guild_id,
         event_id=event['id'],
         event_name=event['event_name'],
@@ -3370,7 +3381,7 @@ async def _handle_delete_event_direct(
     bot.db_manager.delete_event(event['id'])
 
     # 変更履歴を記録
-    bot.db_manager.add_event_history(
+    _safe_add_event_history(bot.db_manager,
         guild_id=guild_id,
         event_id=event['id'],
         event_name=event['event_name'],
